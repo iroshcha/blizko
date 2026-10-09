@@ -20,7 +20,6 @@ public final class ChatService extends Service {
             }
             incoming=count;
             getSystemService(NotificationManager.class).notify(1,notification(s.optString("status")));
-            app.io.execute(app::refreshInterfaces);
         }catch(Exception ignored){}
         handler.postDelayed(this,5000);
     }};

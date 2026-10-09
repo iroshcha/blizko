@@ -5,7 +5,7 @@ import ImageIO
 import UIKit
 
 enum ContactQR {
-    static func valid(_ value: String) -> Bool { value.hasPrefix("blizko:2:") && value.utf8.count <= 4096 }
+    static func valid(_ value: String) -> Bool { value.hasPrefix("blizko:3:") && value.utf8.count <= 4096 }
     static func image(_ code: String) -> UIImage? {
         guard valid(code), let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         filter.setValue(Data(code.utf8), forKey: "inputMessage")
@@ -40,19 +40,17 @@ struct ContactQRView: View {
     @EnvironmentObject var model: ChatModel
     @Environment(\.dismiss) private var dismiss
     @State private var sharing = false
-    @State private var hasInvitation = false
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
                 if let image = ContactQR.image(code) {
                     Image(uiImage: image).interpolation(.none).resizable().scaledToFit().frame(maxWidth: 360)
                         .accessibilityLabel("QR-код моего контакта")
-                    Text(hasInvitation ? "QR содержит контакт и приглашение доступа Tailscale. Передайте его только выбранному другу. Он подтвердит доступ в браузере. Затем примите его QR у себя." : "Этот QR добавляет только контакт. Для разных аккаунтов сначала добавьте приглашение в «QR-подключение с другом». Затем обменяйтесь QR в обе стороны.")
+                    Text("Отправьте этот QR другу и добавьте его QR у себя. Регистрация и пароль не нужны.")
                     Button("Поделиться QR") { sharing = true }.buttonStyle(.borderedProminent)
                         .sheet(isPresented: $sharing) { QRShareSheet(image: image) }
                 } else { Text("Не удалось создать QR-код.") }
             }.padding().navigationTitle("Мой QR-код").toolbar { Button("Готово") { dismiss() } }
-                .onAppear { model.contactInvitation(code) { hasInvitation = !$0.isEmpty } }
         }
     }
 }

@@ -7,7 +7,8 @@ go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
 export PATH="$(go env GOPATH)/bin:$PATH"
 gomobile init
 mkdir -p "$ROOT/ios/Frameworks"
-gomobile bind -target=ios,iossimulator -tags=ts_omit_logtail -iosversion=16.0 -ldflags='-s -w' -o "$ROOT/ios/Frameworks/Mobile.xcframework" ./mobile
+test -f "$ROOT/core/iroh/lib/aarch64-apple-ios/libblizko_iroh.a"
+gomobile bind -target=ios -tags=iroh -iosversion=16.0 -ldflags='-s -w' -o "$ROOT/ios/Frameworks/Mobile.xcframework" ./mobile
 cd "$ROOT/ios"
 xcodegen generate
 xcodebuild -project Blizko.xcodeproj -scheme Blizko -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build

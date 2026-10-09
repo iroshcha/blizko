@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"tailscale.com/ipn"
 )
 
 type vault struct {
@@ -90,11 +89,3 @@ func (v *vault) write(name string, data []byte) error {
 	// POSIX rename atomically replaces the destination on Android and iOS.
 	return os.Rename(tmp, v.filename(name))
 }
-func (v *vault) ReadState(k ipn.StateKey) ([]byte, error) {
-	b, e := v.read("tailscale:" + string(k))
-	if os.IsNotExist(e) {
-		return nil, ipn.ErrStateNotExist
-	}
-	return b, e
-}
-func (v *vault) WriteState(k ipn.StateKey, b []byte) error { return v.write("tailscale:"+string(k), b) }

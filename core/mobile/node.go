@@ -1,11 +1,13 @@
-// Package mobile is the same embedded Tailscale/chat engine on Android and iOS.
+// Package mobile is the same embedded iroh/chat engine on Android and iOS.
 // Its gomobile API only exposes strings, byte arrays and errors.
 package mobile
 
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"golang.org/x/crypto/nacl/box"
@@ -16,7 +18,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"tailscale.com/tsnet"
 	"time"
 )
 
@@ -30,14 +31,14 @@ type message struct {
 	Packet    *envelope `json:"packet,omitempty"`
 }
 type diskState struct {
-	Version  int       `json:"v"`
-	Public   [32]byte  `json:"public"`
-	Secret   [32]byte  `json:"secret"`
-	Contacts []contact `json:"contacts"`
-	Messages []message `json:"messages"`
-	Address  string    `json:"address"`
-	DNSName  string    `json:"dns,omitempty"`
-	Invite   string    `json:"invite,omitempty"`
+	Version   int       `json:"v"`
+	Public    [32]byte  `json:"public"`
+	Secret    [32]byte  `json:"secret"`
+	Contacts  []contact `json:"contacts"`
+	Messages  []message `json:"messages"`
+	Address   string    `json:"address"`
+	IrohSeed  [32]byte  `json:"irohSeed"`
+	RelayOnly bool      `json:"relayOnly"`
 }
 type Node struct {
 	mu             sync.Mutex
@@ -45,7 +46,7 @@ type Node struct {
 	state          diskState
 	storage        *vault
 	dir            string
-	ts             *tsnet.Server
+	link           *irohLink
 	cancel         context.CancelFunc
 	wake           chan struct{}
 	status         string
@@ -54,7 +55,7 @@ type Node struct {
 	online         bool
 	generation     int
 	deliveryIssues map[string]string // Local runtime diagnostics, never message contents or server storage.
-	tailnet        string
+	relay          string
 }
 
 func NewNode(dir string, storageKey []byte) (*Node, error) {
@@ -69,14 +70,31 @@ func NewNode(dir string, storageKey []byte) (*Node, error) {
 		if e != nil {
 			return nil, e
 		}
-		n.state = diskState{Version: 2, Public: *pub, Secret: *priv, Contacts: []contact{}, Messages: []message{}}
+		n.state = diskState{Version: 3, Public: *pub, Secret: *priv, Contacts: []contact{}, Messages: []message{}}
 		if e = n.commit(n.state); e != nil {
 			return nil, e
 		}
 	} else if e != nil {
 		return nil, errors.New("Не удалось расшифровать хранилище. Данные не удалены.")
-	} else if e = json.Unmarshal(b, &n.state); e != nil || n.state.Version != 2 {
+	} else if e = json.Unmarshal(b, &n.state); e != nil || (n.state.Version != 2 && n.state.Version != 3) {
 		return nil, errors.New("Неизвестный формат хранилища")
+	}
+
+	if n.state.IrohSeed == ([32]byte{}) {
+		state := n.clone()
+		if _, e = rand.Read(state.IrohSeed[:]); e != nil {
+			return nil, e
+		}
+		if state.Version == 2 {
+			for i := range state.Contacts {
+				state.Contacts[i].Address = ""
+			}
+		}
+		state.Version = 3
+		state.Address = hex.EncodeToString(ed25519.NewKeyFromSeed(state.IrohSeed[:]).Public().(ed25519.PublicKey))
+		if e = n.commit(state); e != nil {
+			return nil, e
+		}
 	}
 	return n, nil
 }
@@ -98,7 +116,7 @@ func (n *Node) commit(s diskState) error {
 	return nil
 }
 func (n *Node) self() contact {
-	return contact{ID: keyID(n.state.Public), Key: n.state.Public, Address: n.state.Address, DNSName: n.state.DNSName, Invite: n.state.Invite}
+	return contact{ID: keyID(n.state.Public), Key: n.state.Public, Address: n.state.Address}
 }
 func (n *Node) peer(id string) (contact, bool) {
 	for _, c := range n.state.Contacts {
@@ -122,7 +140,9 @@ func (n *Node) Snapshot() string {
 	}
 	s := map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "authURL": n.authURL, "address": n.state.Address, "id": keyID(n.state.Public), "contacts": n.state.Contacts, "messages": msgs, "incoming": incoming}
 	s["deliveryIssues"] = n.deliveryIssues
-	s["tailnet"] = n.tailnet
+	s["relay"] = n.relay
+	s["relayOnly"] = n.state.RelayOnly
+	s["transport"] = "iroh"
 	b, _ := json.Marshal(s)
 	return string(b)
 }
@@ -130,7 +150,7 @@ func (n *Node) MyCode() (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if !validAddress(n.state.Address) {
-		return "", errors.New("Сначала войдите в Tailscale")
+		return "", errors.New("Не удалось подготовить идентификатор iroh")
 	}
 	return encodeContact(n.self()), nil
 }
@@ -144,7 +164,6 @@ func (n *Node) AddContact(name, code string) error {
 		return e
 	}
 	c.Name = name
-	c.Invite = "" // Do not retain the recipient's invitation capability after import.
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if c.ID == keyID(n.state.Public) {
@@ -256,192 +275,6 @@ func (n *Node) applyAck(env envelope, peerID, messageID string) error {
 	}
 	return nil
 }
-func (n *Node) Start() error {
-	n.life.Lock()
-	defer n.life.Unlock()
-	return n.startLocked()
-}
-func (n *Node) startLocked() error {
-	n.mu.Lock()
-	if n.enabled {
-		n.mu.Unlock()
-		return nil
-	}
-	n.mu.Unlock()
-	networkDir, err := prepareNetworkDirectory(n.dir)
-	if err != nil {
-		return err
-	}
-	n.mu.Lock()
-	n.enabled = true
-	n.online = false
-	n.status = "Подключение к Tailscale…"
-	n.authURL = ""
-	n.generation++
-	gen := n.generation
-	hostname := "blizko-" + keyID(n.state.Public)[:10]
-	n.mu.Unlock()
-	ts := &tsnet.Server{Dir: networkDir, Store: n.storage, Hostname: hostname, Logf: func(string, ...any) {}, UserLogf: func(string, ...any) {}}
-	ctx, cancel := context.WithCancel(context.Background())
-	n.ts = ts
-	n.cancel = cancel
-	if e := ts.Start(); e != nil {
-		cancel()
-		_ = ts.Close()
-		n.ts = nil
-		n.mu.Lock()
-		n.enabled = false
-		n.status = "Не удалось запустить Tailscale"
-		n.mu.Unlock()
-		return e
-	}
-	go n.run(ctx, ts, gen)
-	return nil
-}
-
-// Android has no writable HOME, /var/lib or /tmp for application UIDs.
-// tsnet's Dir does not configure ipnlocal's separate sockstat logger: it calls
-// logpolicy.LogsDir even when log upload is disabled. Give it an existing
-// app-private directory before tsnet starts, otherwise that lookup panics.
-// There is one embedded node per app process; these settings are process-wide.
-func prepareNetworkDirectory(dir string) (string, error) {
-	networkDir := filepath.Join(dir, "network")
-	if err := os.MkdirAll(networkDir, 0700); err != nil {
-		return "", errors.New("Не удалось создать служебную папку подключения")
-	}
-	if err := os.Setenv("TS_LOGS_DIR", networkDir); err != nil {
-		return "", err
-	}
-	if err := os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true"); err != nil {
-		return "", err
-	}
-	return networkDir, nil
-}
-
-func (n *Node) Stop() {
-	n.life.Lock()
-	defer n.life.Unlock()
-	n.stopLocked()
-}
-func (n *Node) stopLocked() {
-	if n.cancel != nil {
-		n.cancel()
-	}
-	if n.ts != nil {
-		_ = n.ts.Close()
-		n.ts = nil
-	}
-	n.mu.Lock()
-	n.generation++
-	n.enabled = false
-	n.online = false
-	n.authURL = ""
-	n.status = "Приём выключен"
-	n.tailnet = ""
-	n.mu.Unlock()
-}
-func (n *Node) setStatus(gen int, status, url string, online bool) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.generation == gen {
-		n.status = status
-		n.authURL = url
-		n.online = online
-	}
-}
-func (n *Node) run(ctx context.Context, ts *tsnet.Server, gen int) {
-	lc, e := ts.LocalClient()
-	if e != nil {
-		n.setStatus(gen, "Ошибка сетевого модуля", "", false)
-		return
-	}
-	// tsnet starts the interactive login; LocalClient exposes the actual AuthURL.
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	var listener net.Listener
-	var nextLoginRequest time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		st, e := lc.Status(ctx)
-		if e != nil {
-			continue
-		}
-		if st.BackendState != "Running" || len(st.TailscaleIPs) == 0 {
-			// tsnet checks NeedsLogin only once during Start. The backend can
-			// reach that state later, especially when restarting a saved node.
-			if st.BackendState == "NeedsLogin" && st.AuthURL == "" && time.Now().After(nextLoginRequest) {
-				loginCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-				_ = lc.StartLoginInteractive(loginCtx)
-				cancel()
-				nextLoginRequest = time.Now().Add(20 * time.Second)
-			}
-			n.setStatus(gen, "Войдите в Tailscale", st.AuthURL, false)
-			continue
-		}
-		address := st.TailscaleIPs[0].String()
-		n.mu.Lock()
-		if n.generation != gen || ctx.Err() != nil {
-			n.mu.Unlock()
-			return
-		}
-		s := n.clone()
-		if s.Address != address {
-			s.Invite = ""
-		}
-		s.Address = address
-		if st.Self != nil {
-			s.DNSName = strings.TrimSuffix(st.Self.DNSName, ".")
-		}
-		if st.CurrentTailnet != nil {
-			n.tailnet = st.CurrentTailnet.Name
-		}
-		e = n.commit(s)
-		n.mu.Unlock()
-		if e != nil {
-			n.setStatus(gen, "Не удалось сохранить сетевой адрес", "", false)
-			return
-		}
-		listener, e = ts.Listen("tcp", ":47831")
-		if e != nil {
-			n.setStatus(gen, "Не удалось открыть приём сообщений", "", false)
-			return
-		}
-		break
-	}
-	n.setStatus(gen, "Подключено · Tailscale внутри приложения", "", true)
-	server := &http.Server{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 4096, Handler: n.messageHandler()}
-	go func() { _ = server.Serve(listener) }()
-	defer server.Close()
-	tr := &http.Transport{DialContext: ts.Dial, MaxConnsPerHost: 2, ResponseHeaderTimeout: 10 * time.Second}
-	client := &http.Client{Transport: tr, Timeout: 12 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects disabled") }}
-	defer tr.CloseIdleConnections()
-	retry := time.NewTicker(15 * time.Second)
-	defer retry.Stop()
-	for {
-		st, err := lc.Status(ctx)
-		var routes map[string]string
-		if err == nil {
-			routes = sharedRoutes(st)
-		}
-		n.flushRoutes(ctx, client, routes)
-		select {
-		case <-ctx.Done():
-			return
-		case <-retry.C:
-		case <-n.wake:
-		}
-		st, e := lc.Status(ctx)
-		if e == nil && st.BackendState == "Running" {
-			n.setStatus(gen, "Подключено · Tailscale внутри приложения", "", true)
-		} else {
-			n.setStatus(gen, "Ожидание сети", "", false)
-		}
-	}
-}
 func (n *Node) messageHandler() http.Handler {
 	permits := make(chan struct{}, 8)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -484,9 +317,9 @@ func (n *Node) messageHandler() http.Handler {
 	})
 }
 func (n *Node) flush(ctx context.Context, client *http.Client) {
-	n.flushRoutes(ctx, client, nil)
+	n.flushRoutes(ctx, client)
 }
-func (n *Node) flushRoutes(ctx context.Context, client *http.Client, routes map[string]string) {
+func (n *Node) flushRoutes(ctx context.Context, client *http.Client) {
 	n.mu.Lock()
 	var pending []message
 	peers := map[string]contact{}
@@ -494,9 +327,6 @@ func (n *Node) flushRoutes(ctx context.Context, client *http.Client, routes map[
 		if m.Out && !m.Delivered && m.Packet != nil {
 			pending = append(pending, m)
 			if c, ok := n.peer(m.Peer); ok {
-				if address := routes[c.DNSName]; address != "" {
-					c.Address = address
-				}
 				peers[m.Peer] = c
 			}
 		}
@@ -517,12 +347,17 @@ func (n *Node) flushRoutes(ctx context.Context, client *http.Client, routes map[
 		go func(m message, c contact) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			issue := "Телефон собеседника недоступен. Откройте «Близко» и включите приём на обоих телефонах. Для разных аккаунтов подтвердите взаимный доступ по QR с приглашением."
+			issue := "Телефон собеседника недоступен. Откройте «Близко» и включите приём на обоих телефонах. Сообщение остаётся в очереди."
 			defer func() {
 				if ctx.Err() == nil {
 					n.recordDeliveryIssue(c.ID, issue)
 				}
 			}()
+
+			if !validAddress(c.Address) {
+				issue = "Обменяйтесь новыми QR после обновления обоих телефонов. История сохранена."
+				return
+			}
 			b, _ := json.Marshal(m.Packet)
 			req, e := http.NewRequestWithContext(ctx, "POST", "http://"+net.JoinHostPort(c.Address, "47831")+"/message", bytes.NewReader(b))
 			if e != nil {

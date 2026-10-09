@@ -23,9 +23,7 @@
     else if ([name isEqualToString:@"send"]) [self.node send:first text:second error:&error];
     else if ([name isEqualToString:@"code"]) code = [self.node myCode:&error];
     else if ([name isEqualToString:@"check"]) code = [self.node checkContact:first error:&error];
-    else if ([name isEqualToString:@"network"]) [self.node changeNetwork:&error];
-    else if ([name isEqualToString:@"invite"]) [self.node setInvitation:first error:&error];
-    else if ([name isEqualToString:@"inviteForCode"]) code = MobileContactInvitation(first, &error);
+    else if ([name isEqualToString:@"relay"]) [self.node setRelayOnly:[first isEqualToString:@"true"] error:&error];
     else error = [NSError errorWithDomain:@"Blizko" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Неизвестная команда"}];
     NSDictionary *result = error ? @{ @"error": error.localizedDescription } : @{ @"ok": @YES, @"code": code ?: @"" };
     NSData *data = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];

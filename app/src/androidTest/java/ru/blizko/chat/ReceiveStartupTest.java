@@ -17,7 +17,7 @@ public class ReceiveStartupTest extends Instrumentation {
         Bundle result = new Bundle();
         try {
             testReceiveStartsWithoutClosingActivity();
-            result.putString("stream", "OK: receive starts and reaches login without closing the activity");
+            result.putString("stream", "OK: receive starts and connects to iroh without closing the activity");
             finish(Activity.RESULT_OK, result);
         } catch (Throwable failure) {
             result.putString("stream", "FAIL: " + failure.getClass().getSimpleName() + ": " + failure.getMessage());
@@ -58,14 +58,14 @@ public class ReceiveStartupTest extends Instrumentation {
         JSONObject state = new JSONObject(app.node.snapshot());
         while (System.currentTimeMillis() < deadline) {
             state = new JSONObject(app.node.snapshot());
-            if (!state.optString("authURL").isEmpty() || state.optBoolean("online")) break;
+            if (state.optBoolean("online")) break;
             Thread.sleep(500);
         }
         check(!activity.isFinishing(), "Activity closed during receive startup");
         check(state.optBoolean("enabled"), "Receiver is disabled: " + state.optString("status"));
-        // Do not print the one-time authentication URL in the test output.
-        check(!state.optString("authURL").isEmpty() || state.optBoolean("online"),
-            "No login prompt or connection: " + state.optString("status"));
+        check("iroh".equals(state.optString("transport")), "Wrong transport");
+        check(state.optBoolean("online"),
+            "No iroh connection: " + state.optString("status"));
         runOnMainSync(() -> {
             activity.stopService(new Intent(activity, ChatService.class));
             activity.finish();

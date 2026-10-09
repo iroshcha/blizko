@@ -14,4 +14,6 @@ ios/*.xcodeproj/
 dist/
 __pycache__/
 *.pyc
+core/iroh/target/
+core/iroh/lib/
 hs_err_pid*.log

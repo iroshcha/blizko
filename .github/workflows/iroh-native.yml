@@ -20,6 +20,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core/iroh
+          cache-on-failure: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+          cache-dependency-path: core/go.sum
+      - uses: actions/setup-java@v4
+        if: runner.os == 'Linux'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        if: runner.os == 'Linux'
+        with:
+          gradle-version: '8.11.1'
       - name: Compile host and mobile static libraries
         shell: bash
         run: |
@@ -50,8 +64,50 @@ jobs:
           done
           rustc --version > lib/rust-version.txt
           cp Cargo.lock lib/Cargo.lock
+      - name: Test shared core and real encrypted relay delivery
+        if: runner.os == 'Linux'
+        working-directory: core
+        run: |
+          go test -race -tags=iroh ./mobile
+          BLIZKO_NETWORK_SMOKE=1 go test -tags=iroh -run TestIrohRealRelayDeliveryAndRestart -v ./mobile
+      - name: Collect Rust dependency licenses
+        run: python3 scripts/rust-notices.py
+      - name: Build Android embedded iroh
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+          cd core
+          go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
+          go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
+          gomobile init
+          mkdir -p ../app/libs
+          gomobile bind -target=android/arm64,android/amd64 -tags=iroh -androidapi 26 -ldflags='-s -w' -o ../app/libs/mobile.aar ./mobile
+          cd ..
+          gradle --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
+      - name: Build iPhone
+        if: runner.os == 'macOS'
+        run: |
+          brew install xcodegen
+          bash scripts/build-ios.sh
       - uses: actions/upload-artifact@v4
         with:
           name: iroh-native-${{ matrix.os }}
           path: core/iroh/lib
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: Blizko-iroh-Android
+          path: |
+            app/libs/mobile.aar
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/androidTest/debug/*.apk
+            app/src/main/assets/IROH_NOTICES.txt
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: Blizko-iroh-iPhone
+          path: dist/Blizko-unsigned.ipa
           retention-days: 7

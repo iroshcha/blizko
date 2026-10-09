@@ -19,7 +19,7 @@ static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 fn nodes() -> &'static Mutex<HashMap<u64, Arc<Node>>> { NODES.get_or_init(Default::default) }
 fn runtime() -> &'static Runtime { RUNTIME.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime")) }
 fn text(v: &Value, key: &str) -> Result<String, String> { v[key].as_str().map(str::to_owned).ok_or_else(|| "invalid_request".into()) }
-fn err<E: std::fmt::Display>(_: E) -> String { "connection_failed".into() }
+fn err<E>(_: E) -> String { "connection_failed".into() }
 
 async fn serve(node: Arc<Node>, tx: mpsc::Sender<Value>) {
     let permits = Arc::new(Semaphore::new(8));

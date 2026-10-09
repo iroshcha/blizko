@@ -17,13 +17,13 @@ struct Snapshot: Decodable {
     var status: String = "Открываем хранилище…"
     var enabled = false
     var online = false
-    var authURL = ""
     var address = ""
     var id = ""
     var contacts: [Contact] = []
     var messages: [ChatMessage] = []
     var incoming = 0
-    var tailnet = ""
+    var relay = ""
+    var relayOnly = false
     var deliveryIssues: [String: String]?
 }
 
@@ -79,9 +79,7 @@ struct Snapshot: Decodable {
         }
     }
     func toggle() { perform(snapshot.enabled ? "stop" : "start") }
-    func changeNetwork() { perform("network") }
-    func setInvitation(_ link: String, success: @escaping () -> Void) { perform("invite", first: link) { _ in success() } }
-    func contactInvitation(_ code: String, receive: @escaping (String) -> Void) { perform("inviteForCode", first: code, success: receive) }
+    func setRelayOnly(_ value: Bool) { perform("relay", first: value ? "true" : "false") }
     func checkContact(_ peer: String) { perform("check", first: peer) { [weak self] result in self?.error = result } }
     func add(name: String, code: String, success: @escaping () -> Void) { perform("add", first: name, second: code) { _ in success() } }
     func send(peer: String, text: String, success: @escaping () -> Void) { perform("send", first: peer, second: text) { _ in success() } }

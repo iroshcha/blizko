@@ -14,10 +14,11 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 import java.io.*;
 import java.util.*;
 
-/** QR transports the contact key/address and optionally an owner-approved Tailscale share invitation. */
+/** QR pins both the message key and the iroh endpoint identity. */
 final class ContactQr {
     static String requireContact(String value) {
-        if (value == null || !value.startsWith("blizko:2:") || value.length() > 4096)
+        if (value != null && value.startsWith("blizko:2:")) throw new IllegalArgumentException("Это старый QR. Обновите оба приложения и обменяйтесь новыми кодами.");
+        if (value == null || !value.startsWith("blizko:3:") || value.length() > 4096)
             throw new IllegalArgumentException("Это не QR-код контакта «Близко».");
         return value; // The shared core validates the key and address before saving.
     }

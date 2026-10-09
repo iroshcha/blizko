@@ -18,25 +18,15 @@ public final class ChatApp extends Application {
     @Override public void onCreate() {
         super.onCreate();
         go.Seq.setContext(this);
+        android.net.ConnectivityManager connectivity=getSystemService(android.net.ConnectivityManager.class);
+        connectivity.registerDefaultNetworkCallback(new android.net.ConnectivityManager.NetworkCallback(){
+            @Override public void onAvailable(android.net.Network network){io.execute(ChatApp.this::refreshInterfaces);}
+            @Override public void onLost(android.net.Network network){io.execute(ChatApp.this::refreshInterfaces);}
+        });
         io.execute(() -> {
-            try { refreshInterfaces(); node = Mobile.newNode(new File(getNoBackupFilesDir(),"core").getPath(),StorageKey.load(this)); }
+            try { node = Mobile.newNode(new File(getNoBackupFilesDir(),"core").getPath(),StorageKey.load(this)); }
             catch (Exception e) { error = "Не удалось открыть защищённое хранилище. Данные не удалены."; }
         });
     }
-    public void refreshInterfaces() {
-        try {
-            JSONArray rows=new JSONArray();
-            for(NetworkInterface n:Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                JSONArray addresses=new JSONArray();
-                for(InterfaceAddress a:n.getInterfaceAddresses()) {
-                    String host=a.getAddress().getHostAddress(); if(host==null)continue;
-                    int zone=host.indexOf('%');if(zone>=0)host=host.substring(0,zone);
-                    addresses.put(host+"/"+a.getNetworkPrefixLength());
-                }
-                rows.put(new JSONObject().put("index",n.getIndex()).put("name",n.getName()).put("mtu",n.getMTU())
-                    .put("up",n.isUp()).put("loopback",n.isLoopback()).put("addresses",addresses));
-            }
-            Mobile.setInterfaces(rows.toString());
-        }catch(Exception ignored) { }
-    }
+    public void refreshInterfaces() { if(node!=null)node.networkChanged(); }
 }

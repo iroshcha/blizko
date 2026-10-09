@@ -25,14 +25,9 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Label(model.snapshot.status, systemImage: model.snapshot.online ? "circle.fill" : "circle")
                         .font(.subheadline).foregroundStyle(forest)
-                    if !model.snapshot.tailnet.isEmpty { Text("Сеть: " + model.snapshot.tailnet).font(.caption) }
-                    if let url = URL(string: model.snapshot.authURL), url.scheme == "https",
-                       let host = url.host, host == "tailscale.com" || host.hasSuffix(".tailscale.com") {
-                        Button("Войти в Tailscale") { openURL(url) }.buttonStyle(.borderedProminent)
-                    }
                     Button(model.snapshot.enabled ? "Выключить приём" : "Подключиться") { model.toggle() }
                         .disabled(!model.ready)
-                    Button("QR-подключение с другом") { networkSetup = true }
+                    Button("Настройки соединения") { networkSetup = true }
                 }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.white, in: RoundedRectangle(cornerRadius: 16))
                 HStack {
                     Button { model.myCode { code = $0; showingCode = true } } label: { Label("Мой QR", systemImage: "qrcode") }
@@ -44,7 +39,7 @@ struct HomeView: View {
                 if model.snapshot.contacts.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Ваш первый разговор").font(.title2).bold()
-                        Text("Войдите в Tailscale своим аккаунтом. В «QR-подключение с другом» добавьте приглашение к своему телефону, затем обменяйтесь QR и подтвердите доступ в обе стороны.").foregroundStyle(.secondary)
+                        Text("Включите приём и обменяйтесь QR в обе стороны. Регистрация не нужна. После обновления со старой версии нужны новые QR; история сохраняется.").foregroundStyle(.secondary)
                     }.padding(.top, 24)
                     Spacer()
                 } else {
@@ -72,7 +67,7 @@ struct HomeView: View {
                 .sheet(isPresented: $networkSetup) { QRConnectionView() }
                 .alert("Близко", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("Понятно") { model.error = nil } } message: { Text(model.error ?? "") }
                 .alert("Как работает чат", isPresented: $info) { Button("Понятно", role: .cancel) {} } message: {
-                    Text("Tailscale встроен: второе приложение не нужно. Используется бесплатный Personal-план в пределах его лимитов. История и очередь отправки находятся только на телефонах. Tailscale использует свои службы координации и при необходимости ретрансляторы; передаются зашифрованные данные.\n\nУдаление приложения удаляет историю. Резервной копии нет. Это прототип без независимого аудита безопасности.")
+                    Text("iroh встроен: аккаунт и VPN не нужны. История и очередь отправки находятся только на телефонах. При невозможности прямой связи используются публичные ретрансляторы зашифрованных данных. Их бесплатный режим предназначен для экспериментов и личных проектов.\n\nУдаление приложения удаляет историю. Резервной копии нет. Это прототип без независимого аудита безопасности.")
                 }
                 .alert("Обновления на iPhone", isPresented: $updates) { Button("Понятно", role: .cancel) {} } message: {
                     Text("При бесплатной подписи новая версия устанавливается через SideStore или Sideloadly. Готовый IPA нужно скачать из артефактов успешной macOS-сборки на GitHub. Для сохранения переписки устанавливайте поверх текущей версии с тем же Apple Account и идентификатором приложения.")
@@ -100,14 +95,9 @@ struct AddContactView: View {
                     Label("QR контакта считан", systemImage: "checkmark.circle")
                     TextField("Имя собеседника", text: $name)
                 }
-                Text("Добавление доступно только через QR. Если в QR есть приглашение Tailscale, после добавления откроется браузер: подтвердите доступ своим аккаунтом. Для связи в обе стороны обменяйтесь QR с приглашениями.").font(.caption)
-                Button("Добавить и подключить") {
-                    model.contactInvitation(code) { invitation in
-                        model.add(name: name, code: code) {
-                            dismiss()
-                            if !invitation.isEmpty, let url = URL(string: invitation) { openURL(url) }
-                        }
-                    }
+                Text("Добавление доступно только через QR. Другу нужно добавить ваш QR тоже. Включите приём на обоих телефонах.").font(.caption)
+                Button("Добавить") {
+                    model.add(name: name, code: code) { dismiss() }
                 }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || code.isEmpty)
             }.navigationTitle("Новый контакт").toolbar { Button("Отмена") { dismiss() } }
                 .sheet(isPresented: $scanning) {
@@ -132,20 +122,12 @@ struct AddContactView: View {
 struct QRConnectionView: View {
     @EnvironmentObject var model: ChatModel
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
-    @State private var invitation = ""
     var body: some View {
         NavigationStack {
             Form {
-                Text("Каждый остаётся в своём аккаунте Tailscale. Переключать сети между чатами не нужно.")
-                Text("1. Откройте кабинет → Machines. Найдите этот телефон: blizko-\(model.snapshot.id.prefix(10)) (\(model.snapshot.address)).\n2. Меню ⋯ → Share → Copy invite link. Создайте одноразовую ссылку для друга.\n3. Вставьте её ниже и сохраните. Отправьте «Мой QR»: друг добавит контакт и подтвердит доступ в браузере.\n4. Друг делает то же самое: вы сканируете его QR и подтверждаете доступ к его телефону.")
-                Button("Открыть Machines в Tailscale") { openURL(URL(string: "https://console.tailscale.com/admin/machines")!) }
-                TextField("Ссылка Share для этого телефона", text: $invitation).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                Text("Ссылка даёт доступ к этому устройству. Передавайте QR только выбранному другу. Для следующего друга создайте новую ссылку. Пустое поле убирает приглашение из QR; уже выданный доступ можно отозвать в кабинете Tailscale.").font(.caption)
-                Button("Сохранить") { model.setInvitation(invitation) { dismiss() } }
-            }.navigationTitle("QR-подключение").toolbar { Button("Закрыть") { dismiss() } }
-                .onAppear { if !model.snapshot.address.isEmpty { model.myCode { code in model.contactInvitation(code) { invitation = $0 } } } }
-                .alert("Близко", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("Понятно") { model.error = nil } } message: { Text(model.error ?? "") }
+                Toggle("Только через ретранслятор", isOn: Binding(get: { model.snapshot.relayOnly }, set: { model.setRelayOnly($0) }))
+                Text("Режим проверки: все сообщения идут через ретранслятор iroh с шифрованием. В обычном режиме приложение пробует прямое соединение автоматически.")
+            }.navigationTitle("Соединение iroh").toolbar { Button("Готово") { dismiss() } }
         }
     }
 }

@@ -14,7 +14,6 @@ func testNode(t *testing.T, addr string) *Node {
 	if e != nil {
 		t.Fatal(e)
 	}
-	n.state.Address = addr
 	return n
 }
 func pair(t *testing.T) (*Node, *Node) {
@@ -125,7 +124,7 @@ func TestContactRejectsPublicInternetAddress(t *testing.T) {
 }
 
 func TestContactRejectsLowOrderKey(t *testing.T) {
-	c := contact{Address: "100.64.0.1"}
+	c := contact{Address: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
 	c.Key[0] = 1
 	c.ID = keyID(c.Key)
 	if _, e := decodeContact(encodeContact(c)); e == nil {
