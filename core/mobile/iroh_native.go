@@ -1,4 +1,4 @@
-//go:build iroh
+//go:build iroh && !windows
 
 package mobile
 

@@ -1,0 +1,6 @@
+ZXing.Net 0.16.11
+Copyright Michael Jahn and ZXing contributors.
+Project: https://github.com/micjahn/ZXing.Net
+License: Apache License, Version 2.0.
+The complete Apache License, Version 2.0 text is included in
+THIRD_PARTY_NOTICES.txt supplied with this application.

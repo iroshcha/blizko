@@ -32,6 +32,8 @@ func TestIrohRealRelayDeliveryAndRestart(t *testing.T) {
 			}
 			time.Sleep(250 * time.Millisecond)
 		}
+		t.Log("sender state:", a.Snapshot())
+		t.Log("receiver state:", b.Snapshot())
 		t.Fatal(label)
 	}
 	delivered := func(n *Node, text string) bool {

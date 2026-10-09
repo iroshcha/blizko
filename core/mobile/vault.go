@@ -86,6 +86,5 @@ func (v *vault) write(name string, data []byte) error {
 	if ce != nil {
 		return ce
 	}
-	// POSIX rename atomically replaces the destination on Android and iOS.
-	return os.Rename(tmp, v.filename(name))
+	return replaceVaultFile(tmp, v.filename(name))
 }

@@ -5,6 +5,9 @@ use serde_json::{Value, json};
 use std::{collections::HashMap, ffi::{CStr, CString, c_char}, sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}}, time::Duration};
 use tokio::{runtime::Runtime, sync::{mpsc, oneshot, Semaphore}};
 
+#[cfg(all(test, windows))]
+mod windows_test;
+
 const ALPN: &[u8] = b"blizko/chat/3";
 const MAX_PACKET: usize = 20_000;
 type Reply = oneshot::Sender<String>;
@@ -24,9 +27,35 @@ pub unsafe extern "C" fn blizko_iroh_android_context(vm: *mut std::ffi::c_void, 
     INIT.call_once(|| unsafe { ndk_context::initialize_android_context(vm, context); });
 }
 fn nodes() -> &'static Mutex<HashMap<u64, Arc<Node>>> { NODES.get_or_init(Default::default) }
-fn runtime() -> &'static Runtime { RUNTIME.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime")) }
+fn runtime() -> &'static Runtime { RUNTIME.get_or_init(|| {
+    #[cfg(windows)]
+    if std::env::var_os("BLIZKO_DEBUG_NETWORK").is_some() {
+        let _ = tracing_subscriber::fmt().with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+            .with_ansi(false).with_writer(std::io::stderr).try_init();
+    }
+    tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime")
+}) }
 fn text(v: &Value, key: &str) -> Result<String, String> { v[key].as_str().map(str::to_owned).ok_or_else(|| "invalid_request".into()) }
 fn err<E>(_: E) -> String { "connection_failed".into() }
+fn connect_error<E: std::fmt::Display>(error: E) -> String {
+    // Opt-in diagnostics contain connection errors only, never chat packets.
+    if std::env::var_os("BLIZKO_DEBUG_NETWORK").is_some() {
+        eprintln!("iroh connection: {error}");
+    }
+    "connection_failed".into()
+}
+
+#[cfg(windows)]
+fn configured_relay(raw: &str) -> Result<iroh::RelayUrl, String> {
+    let url: iroh::RelayUrl = raw.parse().map_err(|_| "invalid_relay_url".to_owned())?;
+    let local = matches!(url.host_str(), Some("127.0.0.1") | Some("[::1]"));
+    if (url.scheme() != "https" && !(url.scheme() == "http" && local))
+        || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some()
+        || url.query().is_some() || url.fragment().is_some() || url.path() != "/" {
+        return Err("invalid_relay_url".into());
+    }
+    Ok(url)
+}
 
 async fn serve(node: Arc<Node>, tx: mpsc::Sender<Value>) {
     let permits = Arc::new(Semaphore::new(8));
@@ -61,6 +90,17 @@ async fn dispatch(v: Value) -> Result<Value, String> {
     if op == "start" {
         let key: [u8;32] = hex::decode(text(&v, "key")?).map_err(err)?.try_into().map_err(err)?;
         let mut builder = Endpoint::builder(presets::N0).secret_key(SecretKey::from_bytes(&key)).alpns(vec![ALPN.to_vec()]);
+        #[cfg(windows)]
+        if let Ok(raw) = std::env::var("BLIZKO_RELAY_URL") {
+            builder = builder.relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from_iter([
+                configured_relay(&raw)?,
+            ])));
+        }
+        #[cfg(all(test, windows))]
+        if let Ok(path) = std::env::var("BLIZKO_TEST_LOCAL_CERT") {
+            let certificate = std::fs::read(path).unwrap();
+            builder = builder.ca_tls_config(iroh::tls::CaTlsConfig::embedded().with_extra_roots([certificate.into()]));
+        }
         if v["relayOnly"].as_bool() == Some(true) { builder = builder.clear_ip_transports(); }
         let endpoint = builder.bind().await.map_err(err)?;
         let address = endpoint.id().to_string();
@@ -103,7 +143,7 @@ async fn dispatch(v: Value) -> Result<Value, String> {
             let data = text(&v, "data")?;
             if data.len() > MAX_PACKET { return Err("too_large".into()); }
             tokio::time::timeout(Duration::from_secs(15), async {
-                let conn = node.endpoint.connect(peer, ALPN).await.map_err(err)?;
+                let conn = node.endpoint.connect(peer, ALPN).await.map_err(connect_error)?;
                 let result = async {
                     let (mut send, mut recv) = conn.open_bi().await.map_err(err)?;
                     send.write_all(data.as_bytes()).await.map_err(err)?;
