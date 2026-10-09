@@ -14,3 +14,4 @@ ios/*.xcodeproj/
 dist/
 __pycache__/
 *.pyc
+hs_err_pid*.log

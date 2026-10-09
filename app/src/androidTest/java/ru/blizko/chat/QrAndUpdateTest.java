@@ -52,15 +52,17 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
             prompt[0].getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
         });
         check(new JSONObject(app.node.snapshot()).getJSONArray("contacts").length()==count,"Cancel added contact");
+        runOnMainSync(()->prompt[0]=activity.confirmQrContact(ContactQr.requireContact(code)));
+        waitForIdleSync(); // Dialog.OnShowListener is delivered asynchronously before real user input.
+        String contactName="QR regression "+System.currentTimeMillis();
         runOnMainSync(()->{
-            prompt[0]=activity.confirmQrContact(ContactQr.requireContact(code));
-            findInput(prompt[0].getWindow().getDecorView()).setText("QR regression");
+            findInput(prompt[0].getWindow().getDecorView()).setText(contactName);
             prompt[0].getButton(AlertDialog.BUTTON_POSITIVE).performClick();
         });
         until=System.currentTimeMillis()+30000;boolean saved=false;
         while(System.currentTimeMillis()<until){
             JSONArray contacts=new JSONObject(app.node.snapshot()).getJSONArray("contacts");
-            for(int i=0;i<contacts.length();i++)if("QR regression".equals(contacts.getJSONObject(i).getString("name")))saved=true;
+            for(int i=0;i<contacts.length();i++)if(contactName.equals(contacts.getJSONObject(i).getString("name")))saved=true;
             if(saved)break;Thread.sleep(100);
         }
         check(saved,"Confirmed QR contact was not saved");
@@ -96,6 +98,11 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
             check(wrongSigner.isFile(),"Wrong signer fixture missing");
             try{AppUpdates.verify(context,wrongSigner,release(wrongSigner,BuildConfig.VERSION_CODE,hash(wrongSigner)));throw new AssertionError("Wrong signer accepted");}
             catch(IOException expected){check(expected.getMessage().contains("Подпись"),"Wrong signer fixture failed before signer check");}
+        }
+        if(arguments!=null&&arguments.containsKey("updateFeed")){
+            AppUpdates.Release published=AppUpdates.check(arguments.getString("updateFeed"));
+            File downloaded=AppUpdates.download(context,published,percent->{});
+            AppUpdates.verify(context,downloaded,published);
         }
     }
 }
