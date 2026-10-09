@@ -1,0 +1,32 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'ru.blizko.chat'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'ru.blizko.chat'
+        minSdk 26
+        targetSdk 35
+        versionCode 3
+        versionName '0.1.2'
+        testInstrumentationRunner 'ru.blizko.chat.QrAndUpdateTest'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures { buildConfig true }
+    defaultConfig {
+        buildConfigField 'String', 'UPDATE_MANIFEST_URL', groovy.json.JsonOutput.toJson(providers.gradleProperty('updateManifestUrl').getOrElse('https://github.com/iroshcha/blizko/releases/latest/download/android-update.json'))
+    }
+    buildTypes { release { minifyEnabled false } }
+}
+
+dependencies {
+    implementation files('libs/mobile.aar')
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+    implementation 'com.google.zxing:core:3.5.3'
+    implementation 'androidx.core:core:1.13.1'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+}

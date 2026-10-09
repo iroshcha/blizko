@@ -1,0 +1,21 @@
+name: Publish signed Android release
+on:
+  push:
+    branches: [main]
+    paths: [distribution/android-release.json]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify and publish signed APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/publish-android-release.py

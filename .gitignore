@@ -1,0 +1,16 @@
+.tools/
+.gradle/
+**/build/
+**/node_modules/
+local.properties
+*.jks
+*.keystore
+.idea/
+app/libs/*.aar
+app/libs/*-sources.jar
+ios/Frameworks/
+ios/build/
+ios/*.xcodeproj/
+dist/
+__pycache__/
+*.pyc

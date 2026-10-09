@@ -1,0 +1,33 @@
+name: Blizko
+options:
+  bundleIdPrefix: ru.blizko
+  deploymentTarget:
+    iOS: '16.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    CODE_SIGNING_ALLOWED: NO
+    ENABLE_BITCODE: NO
+targets:
+  Blizko:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - framework: Frameworks/Mobile.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ru.blizko.chat
+        PRODUCT_NAME: Blizko
+        TARGETED_DEVICE_FAMILY: '1,2'
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Info.plist
+        MARKETING_VERSION: '0.1.2'
+        CURRENT_PROJECT_VERSION: 3
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Blizko-Bridging-Header.h
+schemes:
+  Blizko:
+    build:
+      targets:
+        Blizko: all
