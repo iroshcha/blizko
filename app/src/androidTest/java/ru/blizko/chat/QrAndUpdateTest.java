@@ -20,7 +20,7 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
     private void check(boolean value,String reason){if(!value)throw new AssertionError(reason);}
     @Override public void onStart(){
         Bundle result=new Bundle();
-        try{testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testApk();result.putString("stream","OK: repeated receive startup, QR generation, image import, contact confirmation and APK checks");finish(Activity.RESULT_OK,result);}
+        try{testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testApk();IrohDeliveryCheck.run(getTargetContext());result.putString("stream","OK: repeated startup, QR, APK validation, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);}
         catch(Throwable failure){result.putString("stream","FAIL: "+failure.getClass().getSimpleName()+": "+failure.getMessage());finish(Activity.RESULT_CANCELED,result);}
     }
     private String contact()throws Exception{

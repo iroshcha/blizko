@@ -3,7 +3,7 @@ Push-Location "$taskRoot\core"
 try {
     $taskModules = & go list -m -f '{{.Path}}|{{.Version}}|{{.Dir}}' all
     $taskText = [System.Text.StringBuilder]::new()
-    [void]$taskText.AppendLine('Близко: third-party software notices. Generated from pinned Go modules; some modules are build/test-only.')
+    [void]$taskText.AppendLine('Blizko: third-party software notices. Generated from pinned Go modules; some modules are build/test-only. Rust notices are in IROH_NOTICES.txt.')
     foreach ($taskLine in $taskModules) {
         $taskParts = $taskLine.Split('|')
         if ($taskParts.Length -lt 3 -or -not $taskParts[2]) { continue }

@@ -1,0 +1,8 @@
+netdev 0.46.3 is vendored from crates.io (MIT, license kept alongside source).
+Original crate SHA-256: c3c52c2584961c68f5a6e3356797344061f818c93b8acc9cd6d7e284795e563e
+
+Change: src/os/darwin/ipv6_addr_flags.rs, platform guard plus iOS fallback.
+Upstream refers to libc::in6_ifreq on both macOS and iOS, but libc only exposes
+that struct on macOS. On iOS, optional per-address IPv6 flags remain unknown.
+Actual interface/address enumeration and IPv6 connectivity are unchanged.
+Remove the patch once upstream supports this target with the pinned libc.

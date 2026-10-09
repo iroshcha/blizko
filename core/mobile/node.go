@@ -50,7 +50,6 @@ type Node struct {
 	cancel         context.CancelFunc
 	wake           chan struct{}
 	status         string
-	authURL        string
 	enabled        bool
 	online         bool
 	generation     int
@@ -138,7 +137,7 @@ func (n *Node) Snapshot() string {
 			incoming++
 		}
 	}
-	s := map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "authURL": n.authURL, "address": n.state.Address, "id": keyID(n.state.Public), "contacts": n.state.Contacts, "messages": msgs, "incoming": incoming}
+	s := map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "address": n.state.Address, "id": keyID(n.state.Public), "contacts": n.state.Contacts, "messages": msgs, "incoming": incoming}
 	s["deliveryIssues"] = n.deliveryIssues
 	s["relay"] = n.relay
 	s["relayOnly"] = n.state.RelayOnly

@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [codex/iroh-transport]
-    paths: ['core/iroh/**', '.github/workflows/iroh-native.yml']
+    paths: ['core/**', 'app/**', 'ios/**', 'scripts/**', '.github/workflows/iroh-native.yml']
 permissions:
   contents: read
 jobs:
@@ -17,6 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99.0'
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core/iroh
@@ -39,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           cd core/iroh
-          cargo build --release
+          cargo build --release --locked
           mkdir -p lib/host
           cp target/release/libblizko_iroh.a lib/host/
           if [[ "$RUNNER_OS" == "Linux" ]]; then
@@ -58,7 +60,7 @@ jobs:
           fi
           for target in $targets; do
             rustup target add "$target"
-            cargo build --release --target "$target"
+            cargo build --release --locked --target "$target"
             mkdir -p "lib/$target"
             cp "target/$target/release/libblizko_iroh.a" "lib/$target/"
           done
