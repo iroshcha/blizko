@@ -62,6 +62,7 @@ public final class MainActivity extends Activity {
             if(app.node==null){root.addView(text("Открываем защищённое хранилище…",16,MUTED));return;}
             LinearLayout card=column();card.setPadding(dp(14),dp(10),dp(14),dp(10));card.setBackground(bg(Color.WHITE,16));
             card.addView(text((s.optBoolean("online")?"●  ":"○  ")+s.optString("status","Подготовка…"),14,GREEN));
+            if(!s.optString("tailnet").isEmpty())card.addView(text("Сеть: "+s.optString("tailnet"),12,MUTED));
             String auth=s.optString("authURL");if(!auth.isEmpty())card.addView(button("Войти в Tailscale",()->{
                 Uri uri=Uri.parse(auth);String host=uri.getHost();if("https".equals(uri.getScheme())&&host!=null&&(host.equals("tailscale.com")||host.endsWith(".tailscale.com")))startActivity(new Intent(Intent.ACTION_VIEW,uri));else notice("Получен неподдерживаемый адрес входа");
             }));
@@ -72,6 +73,7 @@ public final class MainActivity extends Activity {
                         startForegroundService(new Intent(this,ChatService.class));
                     }
                 }));
+                card.addView(button("Настроить общую сеть",this::networkSetup));
             }
             root.addView(card);gap(root,12);
             if(peer.isEmpty())home(s);else conversation(s);
@@ -96,6 +98,9 @@ public final class MainActivity extends Activity {
         }
     }
     private void conversation(JSONObject s)throws Exception{
+        root.addView(button("Проверить связь с собеседником",()->{String target=peer;work(()->{String result=app.node.checkContact(target);runOnUiThread(()->notice(result));});}));
+        JSONObject issues=s.optJSONObject("deliveryIssues");String issue=issues==null?"":issues.optString(peer);
+        if(!issue.isEmpty())root.addView(text(issue,13,MUTED));
         ScrollView scroll=new ScrollView(this);LinearLayout bubbles=column();scroll.addView(bubbles);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         JSONArray messages=s.optJSONArray("messages");int count=0;
         if(messages!=null)for(int i=0;i<messages.length();i++){
@@ -103,7 +108,7 @@ public final class MainActivity extends Activity {
             boolean out=m.getBoolean("out");LinearLayout bubble=column();bubble.setPadding(dp(14),dp(9),dp(14),dp(9));bubble.setBackground(bg(out?0xFFDCEEE4:Color.WHITE,16));
             bubble.addView(text(m.getString("text"),16,INK));
             String meta=new SimpleDateFormat("HH:mm",Locale.getDefault()).format(new Date(m.getLong("time")));
-            if(out)meta+=" · "+(m.getBoolean("delivered")?"Доставлено":"Ждёт подключения");bubble.addView(text(meta,11,MUTED));
+            if(out)meta+=" · "+(m.getBoolean("delivered")?"Доставлено":"В очереди · не доставлено");bubble.addView(text(meta,11,MUTED));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.gravity=out?Gravity.END:Gravity.START;p.setMargins(out?dp(26):0,dp(4),out?0:dp(26),dp(4));bubbles.addView(bubble,p);
         }
         if(count==0)bubbles.addView(text("Сообщения видны только вам и собеседнику. Добавьте QR-коды контактов на обоих телефонах.",15,MUTED));
@@ -128,6 +133,15 @@ public final class MainActivity extends Activity {
                 }).setNegativeButton("Закрыть",null).show();
         });
     });}
+    private void networkSetup(){
+        new AlertDialog.Builder(this).setTitle("Общая сеть с другом")
+            .setMessage("Каждый входит своим аккаунтом. Но устройства должны быть в одной сети Tailscale. Обмен QR добавляет контакт и не объединяет сети.\n\nВладелец сети открывает Users → Invite external users → Copy invite link, выбирает роль Member и создаёт приглашение. Друг принимает его в браузере своим аккаунтом. Затем в «Близко» выбирает «Войти в другую сеть» и при входе выбирает сеть владельца.\n\nОтдельное приложение Tailscale и общий Wi-Fi не нужны.")
+            .setNeutralButton("Пригласить друга",(d,w)->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://console.tailscale.com/admin/users"))))
+            .setPositiveButton("Войти в другую сеть",(d,w)->new AlertDialog.Builder(this).setTitle("Выбрать другую сеть?")
+                .setMessage("Приём будет переподключён, появится новый вход через браузер. История, контакты и сообщения в очереди сохранятся. После входа ваш сетевой адрес может измениться: отправьте собеседнику новый QR.")
+                .setPositiveButton("Продолжить",(dialog,which)->work(()->app.node.changeNetwork())).setNegativeButton("Отмена",null).show())
+            .setNegativeButton("Закрыть",null).show();
+    }
     private void addContact(){new AlertDialog.Builder(this).setTitle("Добавить по QR")
         .setItems(new String[]{"Сканировать камерой","Выбрать QR из фото"},(dialog,which)->{
             if(which==0)new IntentIntegrator(this).setCaptureActivity(QrScanActivity.class).setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)

@@ -17,6 +17,8 @@ struct HomeView: View {
     @State private var showingCode = false
     @State private var info = false
     @State private var updates = false
+    @State private var networkSetup = false
+    @State private var changingNetwork = false
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
@@ -24,12 +26,14 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Label(model.snapshot.status, systemImage: model.snapshot.online ? "circle.fill" : "circle")
                         .font(.subheadline).foregroundStyle(forest)
+                    if !model.snapshot.tailnet.isEmpty { Text("Сеть: " + model.snapshot.tailnet).font(.caption) }
                     if let url = URL(string: model.snapshot.authURL), url.scheme == "https",
                        let host = url.host, host == "tailscale.com" || host.hasSuffix(".tailscale.com") {
                         Button("Войти в Tailscale") { openURL(url) }.buttonStyle(.borderedProminent)
                     }
                     Button(model.snapshot.enabled ? "Выключить приём" : "Подключиться") { model.toggle() }
                         .disabled(!model.ready)
+                    Button("Настроить общую сеть") { networkSetup = true }
                 }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.white, in: RoundedRectangle(cornerRadius: 16))
                 HStack {
                     Button { model.myCode { code = $0; showingCode = true } } label: { Label("Мой QR", systemImage: "qrcode") }
@@ -66,6 +70,19 @@ struct HomeView: View {
                 .toolbar { Button { info = true } label: { Image(systemName: "info.circle") } }
                 .sheet(isPresented: $adding) { AddContactView() }
                 .sheet(isPresented: $showingCode) { ContactQRView(code: code) }
+                .confirmationDialog("Общая сеть с другом", isPresented: $networkSetup, titleVisibility: .visible) {
+                    Button("Пригласить друга") { openURL(URL(string: "https://console.tailscale.com/admin/users")!) }
+                    Button("Войти в другую сеть") { changingNetwork = true }
+                    Button("Закрыть", role: .cancel) {}
+                } message: {
+                    Text("Обмен QR добавляет контакт и не объединяет сети. Владелец приглашает друга через Users → Invite external users → Copy invite link, роль Member. Друг принимает ссылку своим аккаунтом, затем выбирает общую сеть при входе из «Близко». Отдельное приложение Tailscale не нужно.")
+                }
+                .alert("Выбрать другую сеть?", isPresented: $changingNetwork) {
+                    Button("Продолжить") { model.changeNetwork() }
+                    Button("Отмена", role: .cancel) {}
+                } message: {
+                    Text("Сначала включите приём. Появится новый вход через браузер. История, контакты и очередь сохранятся. После входа сетевой адрес может измениться: отправьте собеседнику новый QR.")
+                }
                 .alert("Близко", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("Понятно") { model.error = nil } } message: { Text(model.error ?? "") }
                 .alert("Как работает чат", isPresented: $info) { Button("Понятно", role: .cancel) {} } message: {
                     Text("Tailscale встроен: второе приложение не нужно. Используется бесплатный Personal-план в пределах его лимитов. История и очередь отправки находятся только на телефонах. Tailscale использует свои службы координации и при необходимости ретрансляторы; передаются зашифрованные данные.\n\nУдаление приложения удаляет историю. Резервной копии нет. Это прототип без независимого аудита безопасности.")
@@ -125,6 +142,8 @@ struct ConversationView: View {
     var body: some View {
         VStack(spacing: 0) {
             Text(model.snapshot.status).font(.caption).foregroundStyle(.secondary).padding(8)
+            Button("Проверить связь с собеседником") { model.checkContact(contact.id) }.font(.subheadline)
+            if let issue = model.snapshot.deliveryIssues?[contact.id] { Text(issue).font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 10) {
@@ -136,7 +155,7 @@ struct ConversationView: View {
                                     Text(message.text).textSelection(.enabled)
                                     HStack(spacing: 5) {
                                         Text(Date(timeIntervalSince1970: Double(message.time) / 1000), style: .time)
-                                        if message.out { Text(message.delivered ? "· Доставлено" : "· Ждёт подключения") }
+                                        if message.out { Text(message.delivered ? "· Доставлено" : "· В очереди · не доставлено") }
                                     }.font(.caption2).foregroundStyle(.secondary)
                                 }.padding(12).background(message.out ? Color(red: 0.86, green: 0.93, blue: 0.89) : .white, in: RoundedRectangle(cornerRadius: 16))
                                 if !message.out { Spacer(minLength: 30) }

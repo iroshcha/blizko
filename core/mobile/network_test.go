@@ -37,3 +37,41 @@ func TestNetworkReachesLogin(t *testing.T) {
 		n.Stop()
 	}
 }
+
+func TestChangingNetworkPreservesChat(t *testing.T) {
+	if os.Getenv("BLIZKO_NETWORK_SMOKE") != "1" {
+		t.Skip("opt-in network smoke")
+	}
+	a, b := pair(t)
+	if err := a.Send(b.self().ID, "Ожидающее сообщение"); err != nil {
+		t.Fatal(err)
+	}
+	id, messageID := a.self().ID, a.state.Messages[0].ID
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+	if err := a.ChangeNetwork(); err != nil {
+		t.Fatal("new network login failed", err)
+	}
+	deadline := time.Now().Add(35 * time.Second)
+	gotLogin := false
+	for time.Now().Before(deadline) {
+		a.mu.Lock()
+		url := a.authURL
+		a.mu.Unlock()
+		if strings.HasPrefix(url, "https://login.tailscale.com/") {
+			gotLogin = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !gotLogin {
+		t.Fatal("new network login URL missing")
+	}
+	a.mu.Lock()
+	if a.self().ID != id || len(a.state.Contacts) != 1 || len(a.state.Messages) != 1 || a.state.Messages[0].ID != messageID || a.state.Messages[0].Packet == nil {
+		t.Error("network change lost identity, contact or outbox")
+	}
+	a.mu.Unlock()
+}

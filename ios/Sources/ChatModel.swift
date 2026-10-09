@@ -23,6 +23,8 @@ struct Snapshot: Decodable {
     var contacts: [Contact] = []
     var messages: [ChatMessage] = []
     var incoming = 0
+    var tailnet = ""
+    var deliveryIssues: [String: String]?
 }
 
 @MainActor final class ChatModel: ObservableObject {
@@ -77,6 +79,8 @@ struct Snapshot: Decodable {
         }
     }
     func toggle() { perform(snapshot.enabled ? "stop" : "start") }
+    func changeNetwork() { perform("network") }
+    func checkContact(_ peer: String) { perform("check", first: peer) { [weak self] result in self?.error = result } }
     func add(name: String, code: String, success: @escaping () -> Void) { perform("add", first: name, second: code) { _ in success() } }
     func send(peer: String, text: String, success: @escaping () -> Void) { perform("send", first: peer, second: text) { _ in success() } }
     func myCode(_ receive: @escaping (String) -> Void) {

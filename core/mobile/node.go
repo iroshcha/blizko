@@ -38,19 +38,21 @@ type diskState struct {
 	Address  string    `json:"address"`
 }
 type Node struct {
-	mu         sync.Mutex
-	life       sync.Mutex
-	state      diskState
-	storage    *vault
-	dir        string
-	ts         *tsnet.Server
-	cancel     context.CancelFunc
-	wake       chan struct{}
-	status     string
-	authURL    string
-	enabled    bool
-	online     bool
-	generation int
+	mu             sync.Mutex
+	life           sync.Mutex
+	state          diskState
+	storage        *vault
+	dir            string
+	ts             *tsnet.Server
+	cancel         context.CancelFunc
+	wake           chan struct{}
+	status         string
+	authURL        string
+	enabled        bool
+	online         bool
+	generation     int
+	deliveryIssues map[string]string // Local runtime diagnostics, never message contents or server storage.
+	tailnet        string
 }
 
 func NewNode(dir string, storageKey []byte) (*Node, error) {
@@ -117,6 +119,8 @@ func (n *Node) Snapshot() string {
 		}
 	}
 	s := map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "authURL": n.authURL, "address": n.state.Address, "id": keyID(n.state.Public), "contacts": n.state.Contacts, "messages": msgs, "incoming": incoming}
+	s["deliveryIssues"] = n.deliveryIssues
+	s["tailnet"] = n.tailnet
 	b, _ := json.Marshal(s)
 	return string(b)
 }
@@ -198,11 +202,11 @@ func (n *Node) accept(env envelope) (envelope, bool, error) {
 	defer n.mu.Unlock()
 	c, ok := n.peer(env.From)
 	if !ok {
-		return envelope{}, false, errors.New("unknown contact")
+		return envelope{}, false, errUnknownContact
 	}
 	p, e := openEnvelope(env, c, n.state.Secret, keyID(n.state.Public))
 	if e != nil || p.Kind != "text" {
-		return envelope{}, false, errors.New("invalid message")
+		return envelope{}, false, errInvalidMessage
 	}
 	duplicate := false
 	for _, m := range n.state.Messages {
@@ -213,7 +217,7 @@ func (n *Node) accept(env envelope) (envelope, bool, error) {
 	}
 	if !duplicate {
 		if len(n.state.Messages) >= 2000 {
-			return envelope{}, false, errors.New("local history full")
+			return envelope{}, false, errHistoryFull
 		}
 		s := n.clone()
 		s.Messages = append(s.Messages, message{ID: p.ID, Peer: p.From, Text: p.Text, Delivered: true, Time: time.Now().UnixMilli()})
@@ -252,6 +256,9 @@ func (n *Node) applyAck(env envelope, peerID, messageID string) error {
 func (n *Node) Start() error {
 	n.life.Lock()
 	defer n.life.Unlock()
+	return n.startLocked()
+}
+func (n *Node) startLocked() error {
 	n.mu.Lock()
 	if n.enabled {
 		n.mu.Unlock()
@@ -311,6 +318,9 @@ func prepareNetworkDirectory(dir string) (string, error) {
 func (n *Node) Stop() {
 	n.life.Lock()
 	defer n.life.Unlock()
+	n.stopLocked()
+}
+func (n *Node) stopLocked() {
 	if n.cancel != nil {
 		n.cancel()
 	}
@@ -324,6 +334,7 @@ func (n *Node) Stop() {
 	n.online = false
 	n.authURL = ""
 	n.status = "Приём выключен"
+	n.tailnet = ""
 	n.mu.Unlock()
 }
 func (n *Node) setStatus(gen int, status, url string, online bool) {
@@ -370,8 +381,15 @@ func (n *Node) run(ctx context.Context, ts *tsnet.Server, gen int) {
 		}
 		address := st.TailscaleIPs[0].String()
 		n.mu.Lock()
+		if n.generation != gen || ctx.Err() != nil {
+			n.mu.Unlock()
+			return
+		}
 		s := n.clone()
 		s.Address = address
+		if st.CurrentTailnet != nil {
+			n.tailnet = st.CurrentTailnet.Name
+		}
 		e = n.commit(s)
 		n.mu.Unlock()
 		if e != nil {
@@ -386,35 +404,7 @@ func (n *Node) run(ctx context.Context, ts *tsnet.Server, gen int) {
 		break
 	}
 	n.setStatus(gen, "Подключено · Tailscale внутри приложения", "", true)
-	permits := make(chan struct{}, 8)
-	server := &http.Server{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 4096, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		if r.Method != "POST" || r.URL.Path != "/message" {
-			http.NotFound(w, r)
-			return
-		}
-		select {
-		case permits <- struct{}{}:
-			defer func() { <-permits }()
-		default:
-			http.Error(w, "busy", 503)
-			return
-		}
-		var env envelope
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 20000))
-		decoder.DisallowUnknownFields()
-		if e := decoder.Decode(&env); e != nil {
-			http.Error(w, "invalid", 400)
-			return
-		}
-		ack, _, e := n.accept(env)
-		if e != nil {
-			http.Error(w, "not accepted", 403)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(ack)
-	})}
+	server := &http.Server{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 4096, Handler: n.messageHandler()}
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
 	tr := &http.Transport{DialContext: ts.Dial, MaxConnsPerHost: 2, ResponseHeaderTimeout: 10 * time.Second}
@@ -437,6 +427,47 @@ func (n *Node) run(ctx context.Context, ts *tsnet.Server, gen int) {
 			n.setStatus(gen, "Ожидание сети", "", false)
 		}
 	}
+}
+func (n *Node) messageHandler() http.Handler {
+	permits := make(chan struct{}, 8)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != "POST" || r.URL.Path != "/message" {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case permits <- struct{}{}:
+			defer func() { <-permits }()
+		default:
+			http.Error(w, "busy", 503)
+			return
+		}
+		var env envelope
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 20000))
+		decoder.DisallowUnknownFields()
+		if e := decoder.Decode(&env); e != nil {
+			http.Error(w, "invalid", 400)
+			return
+		}
+		ack, _, e := n.accept(env)
+		if e != nil {
+			code, status := "storage_failed", http.StatusServiceUnavailable
+			switch {
+			case errors.Is(e, errUnknownContact):
+				code, status = "unknown_contact", http.StatusForbidden
+			case errors.Is(e, errInvalidMessage):
+				code, status = "invalid_message", http.StatusForbidden
+			case errors.Is(e, errHistoryFull):
+				code, status = "history_full", http.StatusInsufficientStorage
+			}
+			w.Header().Set("X-Blizko-Error", code)
+			http.Error(w, "not accepted", status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ack)
+	})
 }
 func (n *Node) flush(ctx context.Context, client *http.Client) {
 	n.mu.Lock()
@@ -466,6 +497,12 @@ func (n *Node) flush(ctx context.Context, client *http.Client) {
 		go func(m message, c contact) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			issue := "Телефон собеседника недоступен. Откройте «Близко» и включите приём на обоих телефонах. Проверьте, что устройства находятся в одной сети Tailscale."
+			defer func() {
+				if ctx.Err() == nil {
+					n.recordDeliveryIssue(c.ID, issue)
+				}
+			}()
 			b, _ := json.Marshal(m.Packet)
 			req, e := http.NewRequestWithContext(ctx, "POST", "http://"+net.JoinHostPort(c.Address, "47831")+"/message", bytes.NewReader(b))
 			if e != nil {
@@ -478,11 +515,13 @@ func (n *Node) flush(ctx context.Context, client *http.Client) {
 			}
 			defer res.Body.Close()
 			if res.StatusCode != 200 {
+				issue = deliveryResponseIssue(res)
 				return
 			}
 			var ack envelope
-			if e = json.NewDecoder(io.LimitReader(res.Body, 20000)).Decode(&ack); e == nil {
-				_ = n.applyAck(ack, m.Peer, m.ID)
+			issue = "Не удалось проверить подтверждение доставки. Сообщение осталось в очереди. Проверьте QR-контакты и версии приложения на обоих телефонах."
+			if e = json.NewDecoder(io.LimitReader(res.Body, 20000)).Decode(&ack); e == nil && n.applyAck(ack, m.Peer, m.ID) == nil {
+				issue = ""
 			}
 		}(m, c)
 	}
