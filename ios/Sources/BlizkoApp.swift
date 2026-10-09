@@ -18,7 +18,6 @@ struct HomeView: View {
     @State private var info = false
     @State private var updates = false
     @State private var networkSetup = false
-    @State private var changingNetwork = false
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
@@ -33,7 +32,7 @@ struct HomeView: View {
                     }
                     Button(model.snapshot.enabled ? "Выключить приём" : "Подключиться") { model.toggle() }
                         .disabled(!model.ready)
-                    Button("Настроить общую сеть") { networkSetup = true }
+                    Button("QR-подключение с другом") { networkSetup = true }
                 }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.white, in: RoundedRectangle(cornerRadius: 16))
                 HStack {
                     Button { model.myCode { code = $0; showingCode = true } } label: { Label("Мой QR", systemImage: "qrcode") }
@@ -45,7 +44,7 @@ struct HomeView: View {
                 if model.snapshot.contacts.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Ваш первый разговор").font(.title2).bold()
-                        Text("Войдите в Tailscale и обменяйтесь QR-кодами контактов. Оба телефона должны быть в одной сети Tailscale.").foregroundStyle(.secondary)
+                        Text("Войдите в Tailscale своим аккаунтом. В «QR-подключение с другом» добавьте приглашение к своему телефону, затем обменяйтесь QR и подтвердите доступ в обе стороны.").foregroundStyle(.secondary)
                     }.padding(.top, 24)
                     Spacer()
                 } else {
@@ -70,19 +69,7 @@ struct HomeView: View {
                 .toolbar { Button { info = true } label: { Image(systemName: "info.circle") } }
                 .sheet(isPresented: $adding) { AddContactView() }
                 .sheet(isPresented: $showingCode) { ContactQRView(code: code) }
-                .confirmationDialog("Общая сеть с другом", isPresented: $networkSetup, titleVisibility: .visible) {
-                    Button("Пригласить друга") { openURL(URL(string: "https://console.tailscale.com/admin/users")!) }
-                    Button("Войти в другую сеть") { changingNetwork = true }
-                    Button("Закрыть", role: .cancel) {}
-                } message: {
-                    Text("Обмен QR добавляет контакт и не объединяет сети. Владелец приглашает друга через Users → Invite external users → Copy invite link, роль Member. Друг принимает ссылку своим аккаунтом, затем выбирает общую сеть при входе из «Близко». Отдельное приложение Tailscale не нужно.")
-                }
-                .alert("Выбрать другую сеть?", isPresented: $changingNetwork) {
-                    Button("Продолжить") { model.changeNetwork() }
-                    Button("Отмена", role: .cancel) {}
-                } message: {
-                    Text("Сначала включите приём. Появится новый вход через браузер. История, контакты и очередь сохранятся. После входа сетевой адрес может измениться: отправьте собеседнику новый QR.")
-                }
+                .sheet(isPresented: $networkSetup) { QRConnectionView() }
                 .alert("Близко", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("Понятно") { model.error = nil } } message: { Text(model.error ?? "") }
                 .alert("Как работает чат", isPresented: $info) { Button("Понятно", role: .cancel) {} } message: {
                     Text("Tailscale встроен: второе приложение не нужно. Используется бесплатный Personal-план в пределах его лимитов. История и очередь отправки находятся только на телефонах. Tailscale использует свои службы координации и при необходимости ретрансляторы; передаются зашифрованные данные.\n\nУдаление приложения удаляет историю. Резервной копии нет. Это прототип без независимого аудита безопасности.")
@@ -97,6 +84,7 @@ struct HomeView: View {
 struct AddContactView: View {
     @EnvironmentObject var model: ChatModel
     @Environment(\.dismiss) var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var name = ""
     @State private var code = ""
     @State private var scanning = false
@@ -112,8 +100,15 @@ struct AddContactView: View {
                     Label("QR контакта считан", systemImage: "checkmark.circle")
                     TextField("Имя собеседника", text: $name)
                 }
-                Text("Добавление доступно только через QR. Для переписки отсканируйте коды друг друга.").font(.caption)
-                Button("Добавить") { model.add(name: name, code: code) { dismiss() } }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || code.isEmpty)
+                Text("Добавление доступно только через QR. Если в QR есть приглашение Tailscale, после добавления откроется браузер: подтвердите доступ своим аккаунтом. Для связи в обе стороны обменяйтесь QR с приглашениями.").font(.caption)
+                Button("Добавить и подключить") {
+                    model.contactInvitation(code) { invitation in
+                        model.add(name: name, code: code) {
+                            dismiss()
+                            if !invitation.isEmpty, let url = URL(string: invitation) { openURL(url) }
+                        }
+                    }
+                }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || code.isEmpty)
             }.navigationTitle("Новый контакт").toolbar { Button("Отмена") { dismiss() } }
                 .sheet(isPresented: $scanning) {
                     NavigationStack { QRScanner { value in code = value; scanning = false }
@@ -129,6 +124,27 @@ struct AddContactView: View {
                         loading = false; photo = nil
                     }
                 }
+                .alert("Близко", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("Понятно") { model.error = nil } } message: { Text(model.error ?? "") }
+        }
+    }
+}
+
+struct QRConnectionView: View {
+    @EnvironmentObject var model: ChatModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @State private var invitation = ""
+    var body: some View {
+        NavigationStack {
+            Form {
+                Text("Каждый остаётся в своём аккаунте Tailscale. Переключать сети между чатами не нужно.")
+                Text("1. Откройте кабинет → Machines. Найдите этот телефон: blizko-\(model.snapshot.id.prefix(10)) (\(model.snapshot.address)).\n2. Меню ⋯ → Share → Copy invite link. Создайте одноразовую ссылку для друга.\n3. Вставьте её ниже и сохраните. Отправьте «Мой QR»: друг добавит контакт и подтвердит доступ в браузере.\n4. Друг делает то же самое: вы сканируете его QR и подтверждаете доступ к его телефону.")
+                Button("Открыть Machines в Tailscale") { openURL(URL(string: "https://console.tailscale.com/admin/machines")!) }
+                TextField("Ссылка Share для этого телефона", text: $invitation).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                Text("Ссылка даёт доступ к этому устройству. Передавайте QR только выбранному другу. Для следующего друга создайте новую ссылку. Пустое поле убирает приглашение из QR; уже выданный доступ можно отозвать в кабинете Tailscale.").font(.caption)
+                Button("Сохранить") { model.setInvitation(invitation) { dismiss() } }
+            }.navigationTitle("QR-подключение").toolbar { Button("Закрыть") { dismiss() } }
+                .onAppear { if !model.snapshot.address.isEmpty { model.myCode { code in model.contactInvitation(code) { invitation = $0 } } } }
                 .alert("Близко", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("Понятно") { model.error = nil } } message: { Text(model.error ?? "") }
         }
     }

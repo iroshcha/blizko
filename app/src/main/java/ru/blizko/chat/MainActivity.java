@@ -57,7 +57,7 @@ public final class MainActivity extends Activity {
             LinearLayout head=new LinearLayout(this);head.setGravity(Gravity.CENTER_VERTICAL);
             TextView title=text(peer.isEmpty()?"Близко":"‹  "+peerName(s,peer),30,INK);title.setTypeface(null,Typeface.BOLD);head.addView(title,new LinearLayout.LayoutParams(0,-2,1));
             if(!peer.isEmpty())title.setOnClickListener(v->onBackPressed());
-            head.addView(button("ⓘ",()->notice("Чат хранится только на телефонах.\n\nTailscale встроен в приложение. Используется его бесплатный Personal-план в пределах тарифа. Для связи добавьте оба устройства в одну сеть Tailscale и обменяйтесь QR-кодами контактов в обе стороны.\n\nЕсли собеседник недоступен, сообщение ждёт на вашем телефоне. Прямое соединение возможно не всегда: Tailscale может пересылать зашифрованные данные через DERP.\n\nУдаление приложения удалит историю. Облачной копии нет. Это тестовая версия; криптографический протокол не проходил независимый аудит.")));root.addView(head);
+            head.addView(button("ⓘ",()->notice("Чат хранится только на телефонах.\n\nTailscale встроен в приложение. Используется его бесплатный Personal-план в пределах тарифа. Для разных аккаунтов обменяйтесь QR-кодами с приглашениями доступа к телефонам и подтвердите доступ в обе стороны.\n\nЕсли собеседник недоступен, сообщение ждёт на вашем телефоне. Прямое соединение возможно не всегда: Tailscale может пересылать зашифрованные данные через DERP.\n\nУдаление приложения удалит историю. Облачной копии нет. Это тестовая версия; криптографический протокол не проходил независимый аудит.")));root.addView(head);
             root.addView(text("Личное остаётся у вас",14,MUTED));gap(root,14);
             if(app.node==null){root.addView(text("Открываем защищённое хранилище…",16,MUTED));return;}
             LinearLayout card=column();card.setPadding(dp(14),dp(10),dp(14),dp(10));card.setBackground(bg(Color.WHITE,16));
@@ -73,7 +73,7 @@ public final class MainActivity extends Activity {
                         startForegroundService(new Intent(this,ChatService.class));
                     }
                 }));
-                card.addView(button("Настроить общую сеть",this::networkSetup));
+                card.addView(button("QR-подключение с другом",this::networkSetup));
             }
             root.addView(card);gap(root,12);
             if(peer.isEmpty())home(s);else conversation(s);
@@ -88,7 +88,7 @@ public final class MainActivity extends Activity {
         TextView label=text("ПЕРЕПИСКИ",12,MUTED);label.setLetterSpacing(.13f);root.addView(label);
         ScrollView scroll=new ScrollView(this);LinearLayout list=column();scroll.addView(list);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         JSONArray contacts=s.optJSONArray("contacts"),messages=s.optJSONArray("messages");
-        if(contacts==null||contacts.length()==0){gap(list,40);list.addView(text("Ваш первый разговор",25,INK));list.addView(text("Включите приём, войдите в Tailscale и обменяйтесь QR-кодами с собеседником. Оба телефона должны быть в одной сети Tailscale.",16,MUTED));return;}
+        if(contacts==null||contacts.length()==0){gap(list,40);list.addView(text("Ваш первый разговор",25,INK));list.addView(text("Включите приём и войдите в Tailscale своим аккаунтом. В «QR-подключение с другом» добавьте приглашение к своему телефону, затем обменяйтесь QR и подтвердите доступ в обе стороны.",16,MUTED));return;}
         for(int i=0;i<contacts.length();i++){
             JSONObject c=contacts.getJSONObject(i);String id=c.getString("id");LinearLayout row=column();row.setPadding(dp(16),dp(12),dp(16),dp(12));row.setBackground(bg(Color.WHITE,16));
             TextView name=text(c.getString("name"),19,INK);name.setTypeface(null,Typeface.BOLD);row.addView(name);
@@ -117,14 +117,15 @@ public final class MainActivity extends Activity {
         line.addView(button("↑",()->{String content=compose.getText().toString();String target=peer;work(()->{app.node.send(target,content);runOnUiThread(()->{draft="";if(compose!=null)compose.setText("");});});}));root.addView(line);
     }
     private void shareCode(){work(()->{
-        Bitmap bitmap=ContactQr.image(app.node.myCode());
+        String code=app.node.myCode();boolean includesInvite=!mobile.Mobile.contactInvitation(code).isEmpty();
+        Bitmap bitmap=ContactQr.image(code);
         Uri imageUri=ContactQr.shareImage(this,bitmap);
         runOnUiThread(()->{
             LinearLayout content=column();content.setPadding(dp(12),dp(8),dp(12),dp(8));
             ImageView image=new ImageView(this);image.setImageBitmap(bitmap);image.setAdjustViewBounds(true);
             image.setContentDescription("QR-код моего контакта");image.setScaleType(ImageView.ScaleType.FIT_CENTER);
             content.addView(image,new LinearLayout.LayoutParams(-1,Math.min(dp(300),getResources().getDisplayMetrics().widthPixels-dp(80))));
-            content.addView(text("Собеседник сканирует этот QR. Затем добавьте его QR у себя. Можно отправить картинку, если вы не рядом.",14,MUTED));
+            content.addView(text(includesInvite?"QR содержит контакт и приглашение доступа Tailscale. Отправьте его только выбранному другу. Друг подтвердит приглашение в браузере. Затем примите его QR у себя.":"Этот QR добавляет только контакт. Для разных аккаунтов сначала добавьте приглашение в «QR-подключение с другом». Затем обменяйтесь QR в обе стороны.",14,MUTED));
             new AlertDialog.Builder(this).setTitle("Мой QR-код").setView(content)
                 .setPositiveButton("Поделиться QR",(d,w)->{
                     Intent send=new Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM,imageUri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -133,15 +134,24 @@ public final class MainActivity extends Activity {
                 }).setNegativeButton("Закрыть",null).show();
         });
     });}
-    private void networkSetup(){
-        new AlertDialog.Builder(this).setTitle("Общая сеть с другом")
-            .setMessage("Каждый входит своим аккаунтом. Но устройства должны быть в одной сети Tailscale. Обмен QR добавляет контакт и не объединяет сети.\n\nВладелец сети открывает Users → Invite external users → Copy invite link, выбирает роль Member и создаёт приглашение. Друг принимает его в браузере своим аккаунтом. Затем в «Близко» выбирает «Войти в другую сеть» и при входе выбирает сеть владельца.\n\nОтдельное приложение Tailscale и общий Wi-Fi не нужны.")
-            .setNeutralButton("Пригласить друга",(d,w)->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://console.tailscale.com/admin/users"))))
-            .setPositiveButton("Войти в другую сеть",(d,w)->new AlertDialog.Builder(this).setTitle("Выбрать другую сеть?")
-                .setMessage("Приём будет переподключён, появится новый вход через браузер. История, контакты и сообщения в очереди сохранятся. После входа ваш сетевой адрес может измениться: отправьте собеседнику новый QR.")
-                .setPositiveButton("Продолжить",(dialog,which)->work(()->app.node.changeNetwork())).setNegativeButton("Отмена",null).show())
-            .setNegativeButton("Закрыть",null).show();
-    }
+    private void networkSetup(){work(()->{
+        JSONObject snapshot=new JSONObject(app.node.snapshot());String id=snapshot.optString("id");
+        String device="blizko-"+id.substring(0,Math.min(10,id.length()));String existing="";
+        if(!snapshot.optString("address").isEmpty())existing=mobile.Mobile.contactInvitation(app.node.myCode());
+        final String saved=existing;
+        runOnUiThread(()->{
+            LinearLayout fields=column();fields.setPadding(dp(20),dp(6),dp(20),dp(6));
+            fields.addView(text("Каждый остаётся в своём аккаунте Tailscale.\n\n1. Откройте кабинет → Machines. Найдите этот телефон: "+device+" ("+snapshot.optString("address")+").\n2. Его меню ⋯ → Share → Copy invite link. Создайте одноразовую ссылку для друга.\n3. Вставьте ссылку ниже, сохраните и отправьте «Мой QR». Друг добавит контакт и подтвердит доступ в браузере.\n4. Друг делает то же самое: вы сканируете его QR и подтверждаете доступ к его телефону.",14,MUTED));
+            fields.addView(button("Открыть Machines в Tailscale",()->startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse("https://console.tailscale.com/admin/machines")))));
+            EditText invite=input("Ссылка Share для этого телефона");invite.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);invite.setText(saved);fields.addView(invite);
+            fields.addView(text("Ссылка даёт доступ к этому устройству. Делитесь QR только с выбранным другом. Для следующего друга создайте новую ссылку; пустое поле убирает приглашение из QR и не отзывает уже выданный доступ. Отозвать его можно в кабинете Tailscale.",12,MUTED));
+            ScrollView scroll=new ScrollView(this);scroll.addView(fields);
+            AlertDialog dialog=new AlertDialog.Builder(this).setTitle("QR-подключение с другом").setView(scroll).setPositiveButton("Сохранить",null).setNegativeButton("Закрыть",null).create();
+            dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b->{String link=invite.getText().toString();work(()->{
+                app.node.setInvitation(link);runOnUiThread(()->{dialog.dismiss();notice("Сохранено. Откройте «Мой QR» и отправьте другу. Для двусторонней связи примите его приглашение тоже.");});
+            });}));dialog.show();
+        });
+    });}
     private void addContact(){new AlertDialog.Builder(this).setTitle("Добавить по QR")
         .setItems(new String[]{"Сканировать камерой","Выбрать QR из фото"},(dialog,which)->{
             if(which==0)new IntentIntegrator(this).setCaptureActivity(QrScanActivity.class).setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
@@ -160,12 +170,13 @@ public final class MainActivity extends Activity {
             notice("Для сканирования разрешите доступ к камере в настройках приложения или выберите QR из фото.");
     }
     AlertDialog confirmQrContact(String scanned){
-        final String code;
-        try{code=ContactQr.requireContact(scanned);}catch(IllegalArgumentException e){notice(e.getMessage());return null;}
+        final String code,invite;
+        try{code=ContactQr.requireContact(scanned);invite=mobile.Mobile.contactInvitation(code);}catch(Exception e){notice(e.getMessage());return null;}
         LinearLayout fields=column();fields.setPadding(dp(20),dp(6),dp(20),dp(6));
         fields.addView(text("QR считан. Как назвать собеседника?",15,MUTED));
+        if(!invite.isEmpty())fields.addView(text("QR также содержит приглашение к телефону друга. После добавления откроется Tailscale: подтвердите доступ своим аккаунтом. Затем передайте другу свой QR с приглашением для доступа в обратную сторону.",14,MUTED));
         EditText name=input("Имя собеседника");fields.addView(name);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Контакт из QR").setView(fields).setPositiveButton("Добавить",null).setNegativeButton("Отмена",null).create();
-        dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b->{String n=name.getText().toString();work(()->{app.node.addContact(n,code);runOnUiThread(()->{dialog.dismiss();notice("Контакт добавлен. Чтобы получать ваши сообщения, собеседник должен добавить ваш QR-код.");});});}));dialog.show();return dialog;
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Контакт из QR").setView(fields).setPositiveButton(invite.isEmpty()?"Добавить":"Добавить и подключить",null).setNegativeButton("Отмена",null).create();
+        dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b->{String n=name.getText().toString();work(()->{app.node.addContact(n,code);runOnUiThread(()->{dialog.dismiss();if(!invite.isEmpty())startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(invite)));else notice("Контакт добавлен. Для разных аккаунтов обменяйтесь QR с приглашениями через «QR-подключение с другом» и подтвердите доступ в обе стороны.");});});}));dialog.show();return dialog;
     }
 }

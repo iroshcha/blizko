@@ -11,6 +11,7 @@ import (
 	"golang.org/x/crypto/nacl/box"
 	"io"
 	"net/netip"
+	"net/url"
 	"strings"
 )
 
@@ -21,6 +22,8 @@ type contact struct {
 	Name    string   `json:"name"`
 	Key     [32]byte `json:"key"`
 	Address string   `json:"address"`
+	DNSName string   `json:"dns,omitempty"`
+	Invite  string   `json:"invite,omitempty"`
 }
 type envelope struct {
 	Version int    `json:"v"`
@@ -70,6 +73,12 @@ func decodeContact(code string) (contact, error) {
 	if e = json.Unmarshal(b, &c); e != nil || c.ID != keyID(c.Key) || !validAddress(c.Address) || c.Key == ([32]byte{}) {
 		return c, errors.New("Неверные ключи или адрес контакта")
 	}
+	if c.Invite != "" && !validInvitation(c.Invite) {
+		return c, errors.New("Неверная ссылка приглашения Tailscale")
+	}
+	if c.DNSName != "" && !validDNSName(c.DNSName) {
+		return c, errors.New("Неверное имя устройства Tailscale")
+	}
 	// NaCl's original ScalarMult API accepts low-order points. Reject those
 	// at contact import with X25519's all-zero shared-secret check.
 	probe := make([]byte, 32)
@@ -78,6 +87,56 @@ func decodeContact(code string) (contact, error) {
 		return c, errors.New("Недопустимый ключ контакта")
 	}
 	return c, nil
+}
+
+func validInvitation(link string) bool {
+	if len(link) > 1024 {
+		return false
+	}
+	u, err := url.Parse(link)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || u.RawPath != "" {
+		return false
+	}
+	if u.Host != "login.tailscale.com" && u.Host != "console.tailscale.com" {
+		return false
+	}
+	if !strings.HasPrefix(u.Path, "/admin/invite/") {
+		return false
+	}
+	token := strings.TrimPrefix(u.Path, "/admin/invite/")
+	if token == "" || token == "." || token == ".." {
+		return false
+	}
+	for _, r := range token {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+func validDNSName(name string) bool {
+	if len(name) > 253 || !strings.HasSuffix(name, ".ts.net") {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// ContactInvitation returns only a validated Tailscale invitation. The app must
+// still let the user accept it in Tailscale's browser authorization screen.
+func ContactInvitation(code string) (string, error) {
+	c, err := decodeContact(code)
+	return c.Invite, err
 }
 
 // NaCl box authenticates the pinned sender public key and encrypts the entire

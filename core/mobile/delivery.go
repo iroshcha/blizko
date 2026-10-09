@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"tailscale.com/ipn/ipnstate"
 	"time"
 )
@@ -52,15 +53,33 @@ func (n *Node) recordDeliveryIssue(peer, issue string) {
 	}
 }
 
-func peerVisible(st *ipnstate.Status, address string) (visible, online bool) {
+func peerVisible(st *ipnstate.Status, c contact) (address string, online bool) {
 	for _, p := range st.Peer {
+		if p == nil {
+			continue
+		}
 		for _, ip := range p.TailscaleIPs {
-			if ip.String() == address {
-				return true, p.Online
+			if validAddress(ip.String()) && ((c.DNSName != "" && strings.TrimSuffix(p.DNSName, ".") == c.DNSName) || (c.DNSName == "" && ip.String() == c.Address)) {
+				return ip.String(), p.Online
 			}
 		}
 	}
-	return false, false
+	return "", false
+}
+func sharedRoutes(st *ipnstate.Status) map[string]string {
+	routes := map[string]string{}
+	for _, p := range st.Peer {
+		if p == nil || p.DNSName == "" {
+			continue
+		}
+		for _, ip := range p.TailscaleIPs {
+			if validAddress(ip.String()) {
+				routes[strings.TrimSuffix(p.DNSName, ".")] = ip.String()
+				break
+			}
+		}
+	}
+	return routes
 }
 
 // CheckContact checks the route and receiving port without sending a chat message.
@@ -94,11 +113,11 @@ func (n *Node) CheckContact(id string) (string, error) {
 	if st.BackendState != "Running" {
 		return "Сначала завершите вход в Tailscale на этом телефоне.", nil
 	}
-	visible, online := peerVisible(st, c.Address)
-	if !visible {
-		return "Адрес собеседника не виден в вашей сети Tailscale. Пригласите друга в общую сеть и выберите её при входе. Если он уже в ней, заново обменяйтесь QR и проверьте разрешения сети.", nil
+	address, online := peerVisible(st, c)
+	if address == "" {
+		return "Телефон собеседника не виден в Tailscale. Подтвердите взаимный доступ по QR с приглашением на обоих телефонах. Обычный QR контакта сам по себе не соединяет разные аккаунты.", nil
 	}
-	conn, err := ts.Dial(ctx, "tcp", net.JoinHostPort(c.Address, "47831"))
+	conn, err := ts.Dial(ctx, "tcp", net.JoinHostPort(address, "47831"))
 	if err != nil {
 		if !online {
 			return "Устройство собеседника видно в общей сети, но оно сейчас не подключено. Попросите его открыть «Близко» и включить приём.", nil
@@ -130,10 +149,28 @@ func (n *Node) ChangeNetwork() error {
 	n.mu.Lock()
 	s := n.clone()
 	s.Address = ""
+	s.DNSName = ""
+	s.Invite = ""
 	err = n.commit(s)
 	n.mu.Unlock()
 	if err != nil {
 		return errors.New("Не удалось сохранить смену подключения. История не удалена.")
 	}
 	return n.startLocked()
+}
+
+// SetInvitation is configured by the device owner, separately from adding QR contacts.
+func (n *Node) SetInvitation(link string) error {
+	link = strings.TrimSpace(link)
+	if link != "" && !validInvitation(link) {
+		return errors.New("Вставьте ссылку Share для своего телефона из Tailscale: https://login.tailscale.com/admin/invite/…")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if link != "" && !validAddress(n.state.Address) {
+		return errors.New("Сначала войдите в Tailscale и создайте ссылку доступа для этого телефона")
+	}
+	s := n.clone()
+	s.Invite = link
+	return n.commit(s)
 }

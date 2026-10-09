@@ -66,7 +66,43 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
             if(saved)break;Thread.sleep(100);
         }
         check(saved,"Confirmed QR contact was not saved");
+        app.io.submit(()->{}).get(60,java.util.concurrent.TimeUnit.SECONDS);waitForIdleSync();
+        String invitation="https://login.tailscale.com/admin/invite/blizko-test-fixture";
+        String invited=contactWithInvitation(invitation);
+        Bitmap combined=ContactQr.image(invited);
+        check(invited.equals(ContactQr.decode(combined)),"Combined contact/invitation QR cannot be read");combined.recycle();
+        check(invitation.equals(mobile.Mobile.contactInvitation(invited)),"Invitation lost at JNI boundary");
+        try{mobile.Mobile.contactInvitation(contactWithInvitation("https://evil.example/admin/invite/token"));throw new AssertionError("Untrusted invitation accepted");}catch(Exception expected){}
+        IntentFilter filter=new IntentFilter(Intent.ACTION_VIEW);filter.addDataScheme("https");filter.addDataAuthority("login.tailscale.com",null);
+        // Intercept the browser launch: no real invitation/account is accepted by a test.
+        ActivityMonitor browser=addMonitor(filter,new ActivityResult(Activity.RESULT_CANCELED,null),true);
+        try{
+            runOnMainSync(()->prompt[0]=activity.confirmQrContact(invited));waitForIdleSync();
+            check(browser.getHits()==0,"Scanning opened invitation without confirmation");
+            String invitedName="Invited QR "+System.currentTimeMillis();
+            runOnMainSync(()->{
+                check(countInputs(prompt[0].getWindow().getDecorView())==1,"Combined QR exposes manual contact-code input");
+                check("Добавить и подключить".contentEquals(prompt[0].getButton(AlertDialog.BUTTON_POSITIVE).getText()),"Invitation consent label missing");
+                findInput(prompt[0].getWindow().getDecorView()).setText(invitedName);
+                prompt[0].getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            });
+            app.io.submit(()->{}).get(60,java.util.concurrent.TimeUnit.SECONDS);waitForIdleSync();
+            check(browser.getHits()==1,"Confirmed invitation did not open browser exactly once");
+            JSONObject snapshot=new JSONObject(app.node.snapshot());
+            JSONArray updated=snapshot.getJSONArray("contacts");boolean updatedContact=false;
+            for(int i=0;i<updated.length();i++){
+                JSONObject c=updated.getJSONObject(i);
+                if(invitedName.equals(c.getString("name"))){updatedContact=true;check(!c.has("invite"),"Received invitation retained in contact");}
+            }
+            check(updatedContact,"Combined QR failed to save contact");
+        }finally{removeMonitor(browser);}
         runOnMainSync(activity::finish);
+    }
+    private String contactWithInvitation(String invitation)throws Exception{
+        String raw=contact().substring("blizko:2:".length());
+        JSONObject card=new JSONObject(new String(Base64.getUrlDecoder().decode(raw),StandardCharsets.UTF_8));
+        card.put("invite",invitation).put("dns","blizko-fixture.example.ts.net");
+        return "blizko:2:"+Base64.getUrlEncoder().withoutPadding().encodeToString(card.toString().getBytes(StandardCharsets.UTF_8));
     }
     private int countInputs(View view){
         int count=view instanceof EditText?1:0;

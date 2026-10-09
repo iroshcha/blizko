@@ -37,19 +37,22 @@ enum ContactQR {
 
 struct ContactQRView: View {
     let code: String
+    @EnvironmentObject var model: ChatModel
     @Environment(\.dismiss) private var dismiss
     @State private var sharing = false
+    @State private var hasInvitation = false
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
                 if let image = ContactQR.image(code) {
                     Image(uiImage: image).interpolation(.none).resizable().scaledToFit().frame(maxWidth: 360)
                         .accessibilityLabel("QR-код моего контакта")
-                    Text("Собеседник сканирует этот QR. Затем добавьте его QR у себя. Если вы не рядом, отправьте картинку.")
+                    Text(hasInvitation ? "QR содержит контакт и приглашение доступа Tailscale. Передайте его только выбранному другу. Он подтвердит доступ в браузере. Затем примите его QR у себя." : "Этот QR добавляет только контакт. Для разных аккаунтов сначала добавьте приглашение в «QR-подключение с другом». Затем обменяйтесь QR в обе стороны.")
                     Button("Поделиться QR") { sharing = true }.buttonStyle(.borderedProminent)
                         .sheet(isPresented: $sharing) { QRShareSheet(image: image) }
                 } else { Text("Не удалось создать QR-код.") }
             }.padding().navigationTitle("Мой QR-код").toolbar { Button("Готово") { dismiss() } }
+                .onAppear { model.contactInvitation(code) { hasInvitation = !$0.isEmpty } }
         }
     }
 }

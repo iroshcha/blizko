@@ -14,7 +14,7 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 import java.io.*;
 import java.util.*;
 
-/** The QR is only a transport for the existing public contact card. No secrets or network requests. */
+/** QR transports the contact key/address and optionally an owner-approved Tailscale share invitation. */
 final class ContactQr {
     static String requireContact(String value) {
         if (value == null || !value.startsWith("blizko:2:") || value.length() > 4096)

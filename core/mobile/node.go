@@ -36,6 +36,8 @@ type diskState struct {
 	Contacts []contact `json:"contacts"`
 	Messages []message `json:"messages"`
 	Address  string    `json:"address"`
+	DNSName  string    `json:"dns,omitempty"`
+	Invite   string    `json:"invite,omitempty"`
 }
 type Node struct {
 	mu             sync.Mutex
@@ -96,7 +98,7 @@ func (n *Node) commit(s diskState) error {
 	return nil
 }
 func (n *Node) self() contact {
-	return contact{ID: keyID(n.state.Public), Key: n.state.Public, Address: n.state.Address}
+	return contact{ID: keyID(n.state.Public), Key: n.state.Public, Address: n.state.Address, DNSName: n.state.DNSName, Invite: n.state.Invite}
 }
 func (n *Node) peer(id string) (contact, bool) {
 	for _, c := range n.state.Contacts {
@@ -142,6 +144,7 @@ func (n *Node) AddContact(name, code string) error {
 		return e
 	}
 	c.Name = name
+	c.Invite = "" // Do not retain the recipient's invitation capability after import.
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if c.ID == keyID(n.state.Public) {
@@ -386,7 +389,13 @@ func (n *Node) run(ctx context.Context, ts *tsnet.Server, gen int) {
 			return
 		}
 		s := n.clone()
+		if s.Address != address {
+			s.Invite = ""
+		}
 		s.Address = address
+		if st.Self != nil {
+			s.DNSName = strings.TrimSuffix(st.Self.DNSName, ".")
+		}
 		if st.CurrentTailnet != nil {
 			n.tailnet = st.CurrentTailnet.Name
 		}
@@ -413,7 +422,12 @@ func (n *Node) run(ctx context.Context, ts *tsnet.Server, gen int) {
 	retry := time.NewTicker(15 * time.Second)
 	defer retry.Stop()
 	for {
-		n.flush(ctx, client)
+		st, err := lc.Status(ctx)
+		var routes map[string]string
+		if err == nil {
+			routes = sharedRoutes(st)
+		}
+		n.flushRoutes(ctx, client, routes)
 		select {
 		case <-ctx.Done():
 			return
@@ -470,6 +484,9 @@ func (n *Node) messageHandler() http.Handler {
 	})
 }
 func (n *Node) flush(ctx context.Context, client *http.Client) {
+	n.flushRoutes(ctx, client, nil)
+}
+func (n *Node) flushRoutes(ctx context.Context, client *http.Client, routes map[string]string) {
 	n.mu.Lock()
 	var pending []message
 	peers := map[string]contact{}
@@ -477,6 +494,9 @@ func (n *Node) flush(ctx context.Context, client *http.Client) {
 		if m.Out && !m.Delivered && m.Packet != nil {
 			pending = append(pending, m)
 			if c, ok := n.peer(m.Peer); ok {
+				if address := routes[c.DNSName]; address != "" {
+					c.Address = address
+				}
 				peers[m.Peer] = c
 			}
 		}
@@ -497,7 +517,7 @@ func (n *Node) flush(ctx context.Context, client *http.Client) {
 		go func(m message, c contact) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			issue := "Телефон собеседника недоступен. Откройте «Близко» и включите приём на обоих телефонах. Проверьте, что устройства находятся в одной сети Tailscale."
+			issue := "Телефон собеседника недоступен. Откройте «Близко» и включите приём на обоих телефонах. Для разных аккаунтов подтвердите взаимный доступ по QR с приглашением."
 			defer func() {
 				if ctx.Err() == nil {
 					n.recordDeliveryIssue(c.ID, issue)
