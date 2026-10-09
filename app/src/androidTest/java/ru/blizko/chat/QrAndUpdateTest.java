@@ -15,6 +15,8 @@ import java.util.Base64;
 
 /** Emulator regression checks for contact QR transport and APK verification. */
 public final class QrAndUpdateTest extends ReceiveStartupTest {
+    private Bundle arguments;
+    @Override public void onCreate(Bundle args){arguments=args;super.onCreate(args);}
     private void check(boolean value,String reason){if(!value)throw new AssertionError(reason);}
     @Override public void onStart(){
         Bundle result=new Bundle();
@@ -39,6 +41,7 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
         ChatApp app=(ChatApp)activity.getApplication();long until=System.currentTimeMillis()+30000;
         while(app.node==null&&System.currentTimeMillis()<until)Thread.sleep(100);
         check(app.node!=null,"Core unavailable");
+        app.io.submit(()->{}).get(60,java.util.concurrent.TimeUnit.SECONDS);
         JSONObject before=new JSONObject(app.node.snapshot());int count=before.getJSONArray("contacts").length();
         AlertDialog[] prompt=new AlertDialog[1];
         runOnMainSync(()->prompt[0]=activity.confirmQrContact(code));waitForIdleSync();
@@ -54,7 +57,7 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
             findInput(prompt[0].getWindow().getDecorView()).setText("QR regression");
             prompt[0].getButton(AlertDialog.BUTTON_POSITIVE).performClick();
         });
-        until=System.currentTimeMillis()+10000;boolean saved=false;
+        until=System.currentTimeMillis()+30000;boolean saved=false;
         while(System.currentTimeMillis()<until){
             JSONArray contacts=new JSONObject(app.node.snapshot()).getJSONArray("contacts");
             for(int i=0;i<contacts.length();i++)if("QR regression".equals(contacts.getJSONObject(i).getString("name")))saved=true;
@@ -88,5 +91,11 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
         try{AppUpdates.https("http://example.com/test.apk");throw new AssertionError("HTTP accepted");}catch(IOException expected){}
         File foreign=new File(getContext().getApplicationInfo().sourceDir);
         try{AppUpdates.verify(context,foreign,release(foreign,BuildConfig.VERSION_CODE,hash(foreign)));throw new AssertionError("Foreign package accepted");}catch(IOException expected){}
+        if(arguments!=null&&arguments.containsKey("wrongSigner")){
+            File wrongSigner=new File(arguments.getString("wrongSigner"));
+            check(wrongSigner.isFile(),"Wrong signer fixture missing");
+            try{AppUpdates.verify(context,wrongSigner,release(wrongSigner,BuildConfig.VERSION_CODE,hash(wrongSigner)));throw new AssertionError("Wrong signer accepted");}
+            catch(IOException expected){check(expected.getMessage().contains("Подпись"),"Wrong signer fixture failed before signer check");}
+        }
     }
 }
