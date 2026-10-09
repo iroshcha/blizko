@@ -65,5 +65,6 @@ Copy-Item -LiteralPath "$taskRoot\windows\Blizko.exe.config" -Destination $out
 Copy-Item -LiteralPath "$taskRoot\THIRD_PARTY_NOTICES.txt" -Destination $out
 Copy-Item -LiteralPath "$taskRoot\app\src\main\assets\IROH_NOTICES.txt" -Destination $out
 Copy-Item -LiteralPath "$taskRoot\windows\README.txt" -Destination $out
+Copy-Item -LiteralPath "$taskRoot\windows\Blizko-Singapore.cmd" -Destination $out
 Copy-Item -LiteralPath "$taskRoot\windows\ZXING_NET_NOTICE.txt" -Destination $out
 Write-Output "Windows app: $out\Blizko.exe"
