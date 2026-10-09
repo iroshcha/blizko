@@ -8,6 +8,7 @@ settings:
     SWIFT_VERSION: '5.0'
     CODE_SIGNING_ALLOWED: NO
     ENABLE_BITCODE: NO
+    OTHER_LDFLAGS: '$(inherited) $(SRCROOT)/../core/iroh/lib/aarch64-apple-ios/libblizko_iroh.a -framework Security -framework SystemConfiguration -framework Network -lresolv'
 targets:
   Blizko:
     type: application
