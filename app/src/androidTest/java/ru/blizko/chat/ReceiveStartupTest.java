@@ -70,5 +70,6 @@ public class ReceiveStartupTest extends Instrumentation {
             activity.stopService(new Intent(activity, ChatService.class));
             activity.finish();
         });
+        app.io.submit(()->{}).get(60,java.util.concurrent.TimeUnit.SECONDS);
     }
 }
