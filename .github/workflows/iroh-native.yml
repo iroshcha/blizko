@@ -1,0 +1,57 @@
+name: Build iroh native transport
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/iroh-transport]
+    paths: ['core/iroh/**', '.github/workflows/iroh-native.yml']
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core/iroh
+      - name: Compile host and mobile static libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd core/iroh
+          cargo build --release
+          mkdir -p lib/host
+          cp target/release/libblizko_iroh.a lib/host/
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            NDK="$ANDROID_HOME/ndk/28.2.13676358"
+            if [[ ! -d "$NDK" ]]; then "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;28.2.13676358'; fi
+            export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+            export CC_aarch64_linux_android=aarch64-linux-android26-clang
+            export AR_aarch64_linux_android=llvm-ar
+            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android26-clang
+            export CC_x86_64_linux_android=x86_64-linux-android26-clang
+            export AR_x86_64_linux_android=llvm-ar
+            export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=x86_64-linux-android26-clang
+            targets='aarch64-linux-android x86_64-linux-android'
+          else
+            targets='aarch64-apple-ios'
+          fi
+          for target in $targets; do
+            rustup target add "$target"
+            cargo build --release --target "$target"
+            mkdir -p "lib/$target"
+            cp "target/$target/release/libblizko_iroh.a" "lib/$target/"
+          done
+          rustc --version > lib/rust-version.txt
+          cp Cargo.lock lib/Cargo.lock
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iroh-native-${{ matrix.os }}
+          path: core/iroh/lib
+          retention-days: 7
