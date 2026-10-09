@@ -345,6 +345,7 @@ func (n *Node) run(ctx context.Context, ts *tsnet.Server, gen int) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var listener net.Listener
+	var nextLoginRequest time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -356,6 +357,14 @@ func (n *Node) run(ctx context.Context, ts *tsnet.Server, gen int) {
 			continue
 		}
 		if st.BackendState != "Running" || len(st.TailscaleIPs) == 0 {
+			// tsnet checks NeedsLogin only once during Start. The backend can
+			// reach that state later, especially when restarting a saved node.
+			if st.BackendState == "NeedsLogin" && st.AuthURL == "" && time.Now().After(nextLoginRequest) {
+				loginCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				_ = lc.StartLoginInteractive(loginCtx)
+				cancel()
+				nextLoginRequest = time.Now().Add(20 * time.Second)
+			}
 			n.setStatus(gen, "Войдите в Tailscale", st.AuthURL, false)
 			continue
 		}
