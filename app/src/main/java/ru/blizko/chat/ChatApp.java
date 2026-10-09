@@ -11,6 +11,7 @@ import java.util.concurrent.*;
 import org.json.*;
 
 public final class ChatApp extends Application {
+    private static native void initializeIroh(android.content.Context context);
     public final ExecutorService io = Executors.newSingleThreadExecutor();
     public volatile Node node;
     public volatile String error;
@@ -18,6 +19,7 @@ public final class ChatApp extends Application {
     @Override public void onCreate() {
         super.onCreate();
         go.Seq.setContext(this);
+        initializeIroh(this);
         android.net.ConnectivityManager connectivity=getSystemService(android.net.ConnectivityManager.class);
         connectivity.registerDefaultNetworkCallback(new android.net.ConnectivityManager.NetworkCallback(){
             @Override public void onAvailable(android.net.Network network){io.execute(ChatApp.this::refreshInterfaces);}

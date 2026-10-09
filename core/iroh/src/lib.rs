@@ -16,6 +16,13 @@ struct Node {
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 static NODES: OnceLock<Mutex<HashMap<u64, Arc<Node>>>> = OnceLock::new();
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+// The Java VM and global Application reference remain valid for the process lifetime.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn blizko_iroh_android_context(vm: *mut std::ffi::c_void, context: *mut std::ffi::c_void) {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| unsafe { ndk_context::initialize_android_context(vm, context); });
+}
 fn nodes() -> &'static Mutex<HashMap<u64, Arc<Node>>> { NODES.get_or_init(Default::default) }
 fn runtime() -> &'static Runtime { RUNTIME.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime")) }
 fn text(v: &Value, key: &str) -> Result<String, String> { v[key].as_str().map(str::to_owned).ok_or_else(|| "invalid_request".into()) }
