@@ -88,3 +88,16 @@ Android instrumentation `ru.blizko.chat.QrAndUpdateTest` проверяет кн
 - [Условия публичных ретрансляторов](https://docs.iroh.computer/iroh-services/relays/public)
 - [SideStore](https://docs.sidestore.io/docs/installation/install)
 - [Sideloadly](https://sideloadly.io/faq.html)
+
+
+Windows 0.2.5 добавляет обновления в приложении: подписанный RSA/SHA-256 манифест,
+проверенный архив, отменяемую загрузку и установку после закрытия с перезапуском.
+Проверка выполняется раз в 6 часов, пока приложение работает, и вручную через
+«Обновления». Предыдущие файлы программы восстанавливаются при прерванной замене;
+история в `%LOCALAPPDATA%\Blizko` не заменяется. Для перехода с Windows 0.2.4
+нужна однократная ручная распаковка 0.2.5. Android остаётся на 0.2.4.
+
+Публикация Windows требует `windows-update.json` в последнем GitHub Release.
+`scripts/sign-windows-update.ps1` подписывает его локальным ключом, защищённым
+DPAPI; закрытый ключ не входит в исходники или CI. Последний релиз также должен
+содержать действующий `android-update.json`, даже если менялась только Windows.

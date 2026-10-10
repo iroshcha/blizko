@@ -53,13 +53,20 @@ try {
 } finally { Pop-Location }
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 & "$PSScriptRoot\windows-icon.ps1" -Path "$out\Blizko.ico"
-$references = @('System.dll','System.Core.dll','System.Drawing.dll','System.Windows.Forms.dll','System.Web.Extensions.dll','System.Xaml.dll')
+$references = @('System.dll','System.Core.dll','System.Drawing.dll','System.Windows.Forms.dll','System.Web.Extensions.dll','System.Xaml.dll','System.Net.Http.dll','System.IO.Compression.dll','System.IO.Compression.FileSystem.dll')
 $compilerArgs = @('/nologo','/target:winexe','/platform:x64','/optimize+','/utf8output',"/out:$out\Blizko.exe", "/win32icon:$out\Blizko.ico", "/win32manifest:$taskRoot\windows\app.manifest", "/resource:$taskRoot\windows\MainWindow.xaml,Blizko.MainWindow.xaml", "/reference:$ZxingDll")
 foreach ($reference in $references) { $compilerArgs += "/reference:$framework\$reference" }
 foreach ($reference in @('PresentationCore.dll','PresentationFramework.dll','WindowsBase.dll')) { $compilerArgs += "/reference:$framework\WPF\$reference" }
 $compilerArgs += @(Get-ChildItem -LiteralPath "$taskRoot\windows" -Filter '*.cs' | Select-Object -ExpandProperty FullName)
 & "$framework\csc.exe" @compilerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Windows interface build failed' }
+$updaterArgs=@('/nologo','/target:winexe','/platform:x64','/optimize+','/utf8output',"/out:$out\Blizko.Updater.exe", "/win32manifest:$taskRoot\windows\app.manifest")
+foreach($reference in $references){$updaterArgs+="/reference:$framework\$reference"}
+$updaterArgs+=@("$taskRoot\windows\updater\Program.cs","$taskRoot\windows\UpdatePackage.cs","$taskRoot\windows\UpdateKey.cs","$taskRoot\windows\WindowsUpdates.cs","$taskRoot\windows\AssemblyInfo.cs")
+& "$framework\csc.exe" @updaterArgs
+if($LASTEXITCODE -ne 0){throw 'Windows updater build failed'}
+Copy-Item -LiteralPath "$taskRoot\windows\Blizko.exe.config" -Destination "$out\Blizko.Updater.exe.config"
+
 Copy-Item -LiteralPath $ZxingDll -Destination "$out\zxing.dll"
 Copy-Item -LiteralPath "$taskRoot\windows\Blizko.exe.config" -Destination $out
 Copy-Item -LiteralPath "$taskRoot\THIRD_PARTY_NOTICES.txt" -Destination $out

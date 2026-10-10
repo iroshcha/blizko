@@ -26,11 +26,13 @@ namespace Blizko {
                 if (args.Length >= 2 && args[0] == "--self-test") return SelfTest.Run(args[1]);
                 if (args.Length >= 2 && args[0] == "--preview") return SelfTest.Preview(args[1]);
                 if (args.Length >= 2 && args[0] == "--network-test") return SelfTest.Network(args[1]);
+                bool receive = !args.Contains("--receive-off");
+                if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, UpdatePackage.JournalName))) { WindowsUpdates.StartRecovery(AppDomain.CurrentDomain.BaseDirectory, receive); return 0; }
                 bool created;
                 using (var mutex = new Mutex(true, "Local\\Blizko.Windows.UI", out created)) {
                     if (!created) { MessageBox.Show("Близко уже запущено. Откройте его значком в системном трее.", "Близко"); return 0; }
                     var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-                    var controller = new ChatWindow(false);
+                    var controller = new ChatWindow(false, receive);
                     application.Run(controller.Window);
                 }
                 return 0;
@@ -41,9 +43,10 @@ namespace Blizko {
         }
     }
 
-    internal sealed class ChatWindow {
+    internal sealed partial class ChatWindow {
         internal Window Window { get; private set; }
         private readonly bool preview;
+        private readonly bool initialReceive;
         private Engine engine;
         private Forms.NotifyIcon tray;
         private readonly DispatcherTimer timer = new DispatcherTimer();
@@ -72,8 +75,9 @@ namespace Blizko {
         private static readonly Brush Green = new SolidColorBrush(Color.FromRgb(35, 108, 88));
         private static readonly Brush Muted = new SolidColorBrush(Color.FromRgb(101, 118, 111));
 
-        internal ChatWindow(bool preview) {
+        internal ChatWindow(bool preview, bool initialReceive = true) {
             this.preview = preview;
+            this.initialReceive = initialReceive;
             using (Stream source = Assembly.GetExecutingAssembly().GetManifestResourceStream("Blizko.MainWindow.xaml")) {
                 Window = (Window)XamlReader.Load(source);
             }
@@ -112,6 +116,7 @@ namespace Blizko {
             Find<Button>("MyQR").Click += async delegate { await Action(async () => ShowQR((await engine.Request("code")).code)); };
             Find<Button>("AddContact").Click += delegate { ShowAddContact(); };
             Find<Button>("Settings").Click += delegate { ShowSettings(); };
+            Find<Button>("Updates").Click += delegate { ShowUpdates(); };
             search.TextChanged += delegate { RenderContacts(true); };
             contacts.SelectionChanged += delegate {
                 if (selecting) return;
@@ -159,9 +164,10 @@ namespace Blizko {
                 menu.Items.Add("Выйти", null, async delegate { await Exit(); });
                 tray.ContextMenuStrip = menu;
                 tray.DoubleClick += delegate { Restore(); };
-                tray.BalloonTipClicked += delegate {Restore();Contact target=snapshot.contacts.FirstOrDefault(c=>c.id==notificationPeer);if(target!=null)contacts.SelectedItem=target;};
+                tray.BalloonTipClicked += delegate {Restore();if(updateBalloon){ShowUpdates();return;}Contact target=snapshot.contacts.FirstOrDefault(c=>c.id==notificationPeer);if(target!=null)contacts.SelectedItem=target;};
                 timer.Start();
-                await Action(async () => ApplyStatus((await engine.Request("start")).snapshot));
+                InitializeUpdates();
+                if(initialReceive)await Action(async () => ApplyStatus((await engine.Request("start")).snapshot));
             } catch (Exception e) { fatal = true; status.Text = "Хранилище не открыто"; UpdateButtons(); Notice(e.Message); }
         }
         private void Restore() { Window.Show(); Window.WindowState = WindowState.Normal; Window.Activate(); pageDirty = true; var refresh = Poll(); }
@@ -173,6 +179,7 @@ namespace Blizko {
         }
         private async Task Exit() {
             if (exiting) return;draftTimer.Stop();await SaveDraft(peer);exiting = true; timer.Stop();
+            updateTimer.Stop();if(updateDownload!=null)updateDownload.Cancel();
             NetworkChange.NetworkAddressChanged -= NetworkChanged;
             try { if (engine != null) await engine.Request("quit"); } catch (Exception) { }
             if (engine != null) engine.Dispose();
@@ -239,7 +246,7 @@ namespace Blizko {
             snapshot.unread=next.unread;snapshot.firstUnread=next.firstUnread;snapshot.latestOrder=next.latestOrder;snapshot.sending=next.sending;snapshot.clear=next.clear;snapshot.storageIssue=next.storageIssue;
             status.Text = (snapshot.online ? "●  " : "○  ") + snapshot.status;
             receive.Content = snapshot.enabled ? "Выключить приём" : "Включить приём";
-            if(tray!=null&&previousUnread!=null&&next.unread!=null)foreach(var entry in next.unread){int old;previousUnread.TryGetValue(entry.Key,out old);if(entry.Value>old&&(!Window.IsActive||entry.Key!=peer||before>0)){notificationPeer=entry.Key;tray.ShowBalloonTip(4000,"Близко · новое сообщение","Откройте Близко, чтобы прочитать сообщение.",Forms.ToolTipIcon.Info);break;}}
+            if(tray!=null&&previousUnread!=null&&next.unread!=null)foreach(var entry in next.unread){int old;previousUnread.TryGetValue(entry.Key,out old);if(entry.Value>old&&(!Window.IsActive||entry.Key!=peer||before>0)){updateBalloon=false;notificationPeer=entry.Key;tray.ShowBalloonTip(4000,"Близко · новое сообщение","Откройте Близко, чтобы прочитать сообщение.",Forms.ToolTipIcon.Info);break;}}
             previousUnread=next.unread==null?null:new Dictionary<string,int>(next.unread);
             incoming = snapshot.incoming;
             UpdateButtons();
@@ -321,7 +328,7 @@ namespace Blizko {
             try{await engine.Request("read",target,before:order);}catch(Exception){readOrders.Remove(target);}
         }
         private Window Dialog(string title, double width) {
-            return new Window { Title = title, Owner = Window, Width = width, SizeToContent = SizeToContent.Height, ResizeMode = ResizeMode.NoResize,
+            return new Window { Title = title, Owner = preview ? null : Window, Width = width, SizeToContent = SizeToContent.Height, ResizeMode = ResizeMode.NoResize,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner, Background = new SolidColorBrush(Color.FromRgb(245, 246, 242)),
                 FontFamily = new FontFamily("Segoe UI"), FontSize = 14, Foreground = Window.Foreground, Resources = Window.Resources };
         }
@@ -378,11 +385,11 @@ namespace Blizko {
             var apply = new Button { Content = "Сохранить", Background = Green, Foreground = Brushes.White, IsEnabled = engine != null && !fatal };
             apply.Click += async delegate { apply.IsEnabled = false; try { await engine.Request("server",server.Text); ApplyStatus((await engine.Request("relay", value: relay.IsChecked == true)).snapshot); pageDirty = true; await Poll(); dialog.Close(); } catch (Exception e) { Notice(e.Message); apply.IsEnabled = true; } };
             content.Children.Add(apply);
-            content.Children.Add(new TextBlock { Text = "Близко 0.2.4 · Windows", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 24, 0, 12) });
+            content.Children.Add(new TextBlock { Text = "Близко 0.2.5 · Windows", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 24, 0, 12) });
             content.Children.Add(Label("Регистрация не нужна. Ключи создаются автоматически. История хранится на этом компьютере. Закрытие окна оставляет приложение в трее; «Выйти» останавливает приём."));
-            content.Children.Add(Label("Windows — отдельный контакт; синхронизации с вашей историей на телефоне пока нет. На iPhone для доставки нужно открыть приложение."));
-            var release = new Button { Content = "Открыть страницу релизов", Background = Brushes.Transparent };
-            release.Click += delegate { Process.Start(new ProcessStartInfo("https://github.com/iroshcha/blizko/releases") { UseShellExecute = true }); };
+            content.Children.Add(Label("Windows — отдельный контакт; синхронизации с вашей историей на телефоне пока нет."));
+            var release = new Button { Content = "Обновления приложения", Background = Brushes.Transparent };
+            release.Click += delegate { dialog.Close(); ShowUpdates(); };
             content.Children.Add(release); dialog.Content = content; dialog.ShowDialog();
         }
     }

@@ -44,6 +44,9 @@ jobs:
       - name: Test delayed send and concurrent diagnostics
         shell: pwsh
         run: ./scripts/test-windows-interactions.ps1 -OutputDirectory "$env:RUNNER_TEMP\blizko-interactions"
+      - name: Test signed updates, rollback and restart
+        shell: pwsh
+        run: ./scripts/test-windows-updates.ps1 -OutputDirectory "$env:RUNNER_TEMP\blizko-updates"
       - name: Test real Windows relay delivery and restart
         shell: pwsh
         run: ./scripts/test-windows-local.ps1 -TestDirectory "$env:RUNNER_TEMP\blizko-local-network"
@@ -61,6 +64,9 @@ jobs:
             ${{ runner.temp }}/blizko-ui/*.txt
             ${{ runner.temp }}/blizko-ui/*preview.png
             ${{ runner.temp }}/blizko-interactions/*.txt
+            ${{ runner.temp }}/blizko-interactions/*preview.png
+            ${{ runner.temp }}/blizko-updates/updates.txt
+            ${{ runner.temp }}/blizko-updates/update-errors.txt
             ${{ runner.temp }}/blizko-local-network/*.txt
             ${{ runner.temp }}/blizko-network/*.txt
       - name: Package Windows
