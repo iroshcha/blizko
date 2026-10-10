@@ -30,8 +30,8 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
                 check(!new JSONObject(app.node.status()).getBoolean("enabled"),"Explicit stop left node enabled");
                 result.putString("stream","OK: explicit stop disables receive and automatic restart");finish(Activity.RESULT_OK,result);return;
             }
-            testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testApk();IrohDeliveryCheck.run(getTargetContext());
-            result.putString("stream","OK: repeated startup, paged history and focused draft, QR, APK validation, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);
+            testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testApk();testAutomaticUpdates();IrohDeliveryCheck.run(getTargetContext());
+            result.putString("stream","OK: repeated startup, paged history and focused draft, QR, APK validation, persistent update scheduling and deduplicated notifications, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);
         }
         catch(Throwable failure){result.putString("stream","FAIL: "+failure.getClass().getSimpleName()+": "+failure.getMessage());finish(Activity.RESULT_CANCELED,result);}
     }
@@ -40,6 +40,41 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
         JSONObject card=new JSONObject().put("id",AppUpdates.hex(MessageDigest.getInstance("SHA-256").digest(key)))
             .put("name","").put("key",bytes).put("address","0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
         return "blizko:3:"+Base64.getUrlEncoder().withoutPadding().encodeToString(card.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    private void testAutomaticUpdates()throws Exception{
+        Context context=getTargetContext();android.app.job.JobScheduler scheduler=context.getSystemService(android.app.job.JobScheduler.class);
+        NotificationManager manager=context.getSystemService(NotificationManager.class);
+        AutoUpdates.setEnabled(context,false);AutoUpdates.prefs(context).edit().clear().commit();AutoUpdates.schedule(context);
+        android.app.job.JobInfo periodic=scheduler.getPendingJob(AutoUpdates.PERIODIC_JOB);
+        check(periodic!=null&&periodic.isPersisted()&&periodic.isPeriodic()&&periodic.getIntervalMillis()==AutoUpdates.PERIOD,"Periodic check not persisted");
+        check(periodic.getNetworkType()==android.app.job.JobInfo.NETWORK_TYPE_ANY,"Update job can run offline");
+        check(scheduler.getPendingJob(AutoUpdates.STARTUP_JOB)!=null,"Startup check missing");
+        scheduler.cancel(AutoUpdates.STARTUP_JOB);
+        AutoUpdates.prefs(context).edit().putLong("lastAttempt",System.currentTimeMillis()).commit();AutoUpdates.schedule(context);
+        check(scheduler.getPendingJob(AutoUpdates.STARTUP_JOB)==null,"Startup checks are not throttled");
+        String hash=String.join("",java.util.Collections.nCopies(64,"a"));
+        AppUpdates.Release next=new AppUpdates.Release(new JSONObject().put("versionCode",BuildConfig.VERSION_CODE+1).put("versionName","test-next")
+            .put("sha256",hash).put("size",1).put("url","https://example.com/Blizko.apk").toString());
+        AutoUpdates.record(context,next);
+        android.service.notification.StatusBarNotification found=null;
+        long until=System.currentTimeMillis()+3000;
+        while(found==null&&System.currentTimeMillis()<until){
+            for(android.service.notification.StatusBarNotification notification:manager.getActiveNotifications())if(notification.getId()==AutoUpdates.NOTIFICATION)found=notification;
+            if(found==null)Thread.sleep(100);
+        }
+        check(found!=null&&found.getNotification().contentIntent!=null,"Update notification or install-screen intent missing");
+        check(found.getNotification().getChannelId().equals(AutoUpdates.CHANNEL),"Update shares message notification channel");
+        manager.cancel(AutoUpdates.NOTIFICATION);AutoUpdates.record(context,next);Thread.sleep(200);
+        for(android.service.notification.StatusBarNotification notification:manager.getActiveNotifications())check(notification.getId()!=AutoUpdates.NOTIFICATION,"Dismissed update notified twice");
+        AutoUpdates.setEnabled(context,false);
+        check(scheduler.getPendingJob(AutoUpdates.PERIODIC_JOB)==null&&scheduler.getPendingJob(AutoUpdates.STARTUP_JOB)==null,"Opt-out retained jobs");
+        AutoUpdates.prefs(context).edit().remove("notified").commit();AutoUpdates.record(context,next);
+        for(android.service.notification.StatusBarNotification notification:manager.getActiveNotifications())check(notification.getId()!=AutoUpdates.NOTIFICATION,"Opt-out still notifies");
+        check(AutoUpdates.available(context)!=null,"Notification opt-out removed in-app update info");
+        AutoUpdates.prefs(context).edit().clear().commit();
+        AppUpdates.Release installed=new AppUpdates.Release(new JSONObject(next.json).put("versionCode",BuildConfig.VERSION_CODE).toString());
+        AutoUpdates.record(context,installed);check(AutoUpdates.available(context)==null,"Installed update still offered");
+        AutoUpdates.schedule(context);
     }
     private void testQr()throws Exception{
         Context context=getTargetContext();String code=contact();Bitmap qr=ContactQr.image(code);

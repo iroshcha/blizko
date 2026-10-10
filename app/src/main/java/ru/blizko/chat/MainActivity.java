@@ -28,10 +28,12 @@ public final class MainActivity extends Activity {
     private ScrollView historyScroll;
     private long before=0,pageRevision=-1;
     private boolean active=false,polling=false;
-    private String contentKey="",renderedPage="";
+    private String contentKey="",renderedPage="",updateInfo="";
     private static final int PICK_QR_IMAGE=42;
     private final Handler handler=new Handler(Looper.getMainLooper());
     private final Runnable poll=new Runnable(){public void run(){
+        String availableUpdate=AutoUpdates.prefs(MainActivity.this).getString("available","");
+        if(!availableUpdate.equals(updateInfo)){updateInfo=availableUpdate;pageRevision=-1;}
         if(app.node==null){if(root==null)render("");}
         else if(!polling){
             polling=true;String target=peer;long cursor=before,known=pageRevision;
@@ -46,7 +48,7 @@ public final class MainActivity extends Activity {
                     if(!active||!target.equals(peer)||cursor!=before)return;
                     if(result!=null)try{
                         JSONObject s=new JSONObject(result);last=result;pageRevision=s.optLong("revision");
-                        String key=target+":"+cursor+":"+s.optBoolean("enabled")+":"+s.opt("contacts")+":"+s.opt("messages")+":"+s.opt("deliveryIssues")+":"+s.opt("previews");
+                        String key=target+":"+cursor+":"+s.optBoolean("enabled")+":"+s.opt("contacts")+":"+s.opt("messages")+":"+s.opt("deliveryIssues")+":"+s.opt("previews")+":"+AutoUpdates.prefs(MainActivity.this).getString("available","");
                         if(root==null||!key.equals(contentKey)){contentKey=key;render(result);}
                         if(connectionStatus!=null)connectionStatus.setText((s.optBoolean("online")?"●  ":"○  ")+s.optString("status"));
                     }catch(Exception ignored){}
@@ -57,7 +59,15 @@ public final class MainActivity extends Activity {
         handler.postDelayed(this,1000);
     }};
     @Override public void onCreate(Bundle state){super.onCreate(state);app=(ChatApp)getApplication();getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);if(state!=null){peer=state.getString("peer","");draft=state.getString("draft","");before=state.getLong("before",0);}}
-    @Override protected void onResume(){super.onResume();active=true;app.activeScreen=true;handler.removeCallbacks(poll);handler.post(poll);}
+    @Override protected void onResume(){super.onResume();AutoUpdates.schedule(this);requestUpdateNotifications();active=true;app.activeScreen=true;handler.removeCallbacks(poll);handler.post(poll);}
+    private void requestUpdateNotifications(){
+        if(Build.VERSION.SDK_INT>=33&&AutoUpdates.enabled(this)&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED
+            &&!AutoUpdates.prefs(this).getBoolean("permissionAsked",false)){
+            AutoUpdates.prefs(this).edit().putBoolean("permissionAsked",true).apply();
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},12);
+        }
+    }
+    @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){super.onRequestPermissionsResult(code,permissions,results);AutoUpdates.showCached(this);}
     @Override protected void onPause(){super.onPause();active=false;app.activeScreen=false;handler.removeCallbacks(poll);}
     @Override protected void onSaveInstanceState(Bundle out){super.onSaveInstanceState(out);out.putString("peer",peer);out.putString("draft",compose==null?draft:compose.getText().toString());out.putLong("before",before);}
     @Override public void onBackPressed(){if(!peer.isEmpty()){peer="";before=0;draft="";compose=null;refreshPage();}else super.onBackPressed();}
@@ -112,7 +122,8 @@ public final class MainActivity extends Activity {
         LinearLayout actions=new LinearLayout(this);
         actions.addView(button("Мой QR",this::shareCode),new LinearLayout.LayoutParams(0,dp(50),1));
         actions.addView(button("+ Контакт",this::addContact),new LinearLayout.LayoutParams(0,dp(50),1));root.addView(actions);gap(root,12);
-        root.addView(button("Обновления · "+BuildConfig.VERSION_NAME,()->startActivity(new Intent(this,UpdateActivity.class))));
+        AppUpdates.Release update=AutoUpdates.available(this);
+        root.addView(button(update==null?"Обновления · "+BuildConfig.VERSION_NAME:"Доступна версия "+update.versionName+" · Обновить",()->startActivity(new Intent(this,UpdateActivity.class))));
         TextView label=text("ПЕРЕПИСКИ",12,MUTED);label.setLetterSpacing(.13f);root.addView(label);
         ScrollView scroll=new ScrollView(this);LinearLayout list=column();scroll.addView(list);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         JSONArray contacts=s.optJSONArray("contacts");JSONObject previews=s.optJSONObject("previews");

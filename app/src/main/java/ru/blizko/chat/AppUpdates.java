@@ -15,9 +15,10 @@ final class AppUpdates {
     static final long MAX_APK=200L*1024*1024;
     static final class Release {
         final int versionCode;
-        final String versionName,sha256,url;
+        final String versionName,sha256,url,json;
         final long size;
         Release(String json) throws Exception {
+            this.json=json;
             JSONObject data=new JSONObject(json);
             versionCode=data.getInt("versionCode");versionName=data.getString("versionName");
             sha256=data.getString("sha256").toLowerCase(Locale.ROOT);url=data.getString("url");size=data.getLong("size");
@@ -49,7 +50,9 @@ final class AppUpdates {
         throw new IOException("Слишком много перенаправлений.");
     }
     static Release check(String feed) throws Exception {
-        HttpURLConnection connection=open(feed);
+        // GitHub's latest-release redirect can remain cached after a publication.
+        String fresh=android.net.Uri.parse(feed).buildUpon().appendQueryParameter("check",Long.toString(System.currentTimeMillis())).build().toString();
+        HttpURLConnection connection=open(fresh);
         try(InputStream input=connection.getInputStream();ByteArrayOutputStream output=new ByteArrayOutputStream()){
             byte[] chunk=new byte[4096];int count;
             while((count=input.read(chunk))!=-1){if(output.size()+count>65536)throw new IOException("Ответ сервиса слишком большой.");output.write(chunk,0,count);}
@@ -59,7 +62,7 @@ final class AppUpdates {
     static File download(Context context,Release release,Progress progress) throws Exception {
         File directory=new File(context.getCacheDir(),"updates");
         if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("Не удалось создать папку обновления.");
-        File file=new File(directory,"Blizko-update.apk");boolean verified=false;
+        File file=File.createTempFile("Blizko-update-",".apk",directory);boolean verified=false;
         HttpURLConnection connection=open(release.url);
         try(InputStream input=connection.getInputStream();OutputStream output=new FileOutputStream(file)){
             byte[] chunk=new byte[65536];int count,last=-1;long received=0;

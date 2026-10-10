@@ -24,14 +24,22 @@ public final class UpdateActivity extends Activity {
         int pad=(int)(24*getResources().getDisplayMetrics().density);body.setPadding(pad,pad,pad,pad);
         TextView heading=new TextView(this);heading.setText("Обновления «Близко»");heading.setTextSize(26);body.addView(heading);
         TextView version=new TextView(this);version.setText("Установлена версия "+BuildConfig.VERSION_NAME);body.addView(version);
+        Switch automatic=new Switch(this);automatic.setText("Уведомлять о новых версиях");automatic.setChecked(AutoUpdates.enabled(this));body.addView(automatic);
+        automatic.setOnCheckedChangeListener((view,checked)->AutoUpdates.setEnabled(this,checked));
+        TextView explanation=new TextView(this);explanation.setText("Проверка при открытии приложения и примерно раз в 12 часов в фоне при наличии интернета. Установка — после вашего подтверждения.");body.addView(explanation);
+        if(!getSystemService(NotificationManager.class).areNotificationsEnabled()){
+            Button notifications=new Button(this);notifications.setText("Разрешить уведомления");
+            notifications.setOnClickListener(v->startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,getPackageName())));body.addView(notifications);
+        }
         status=new TextView(this);status.setPadding(0,pad,0,pad);body.addView(status);
         progress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);progress.setMax(100);progress.setVisibility(android.view.View.GONE);body.addView(progress);
         action=new Button(this);action.setAllCaps(false);action.setText("Проверить обновления");body.addView(action);
         action.setOnClickListener(v->{if(apk!=null)install();else if(release!=null)download();else check();});
-        Button close=new Button(this);close.setText("Назад");close.setOnClickListener(v->finish());body.addView(close);setContentView(body);
+        Button close=new Button(this);close.setText("Назад");close.setOnClickListener(v->finish());body.addView(close);
+        ScrollView scroll=new ScrollView(this);scroll.addView(body);setContentView(scroll);
         if(BuildConfig.UPDATE_MANIFEST_URL.isEmpty()){
             status.setText("Канал обновлений ещё не подключён. Эта версия пока обновляется установкой нового APK.");action.setEnabled(false);
-        }else status.setText("Можно проверить новую версию. Установка потребует подтверждения Android.");
+        }else{status.setText("Можно проверить новую версию. Установка потребует подтверждения Android.");check();}
     }
     private void ui(Runnable task){runOnUiThread(()->{if(!isFinishing()&&!isDestroyed())task.run();});}
     private void failed(Exception failure){ui(()->{busy=false;action.setEnabled(true);progress.setVisibility(android.view.View.GONE);
@@ -40,9 +48,11 @@ public final class UpdateActivity extends Activity {
         if(busy)return;busy=true;action.setEnabled(false);status.setText("Проверяем новую версию…");
         worker.execute(()->{try{
             AppUpdates.Release result=AppUpdates.check(BuildConfig.UPDATE_MANIFEST_URL);
+            AutoUpdates.record(this,result);
             ui(()->{busy=false;action.setEnabled(true);
                 if(result.versionCode>BuildConfig.VERSION_CODE){release=result;status.setText("Доступна версия "+result.versionName+". Переписка сохранится.");action.setText("Скачать обновление");}
-                else status.setText("У вас последняя доступная версия.");
+                else if(result.versionCode==BuildConfig.VERSION_CODE)status.setText("У вас последняя доступная версия.");
+                else status.setText("Канал обновлений выдаёт более старую версию "+result.versionName+". У вас установлена "+BuildConfig.VERSION_NAME+"; повторите проверку позже.");
             });
         }catch(Exception e){failed(e);}});
     }
