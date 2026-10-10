@@ -17,7 +17,10 @@ foreach($version in @('old','new')){
  if($LASTEXITCODE -ne 0){throw 'Update fixture compilation failed'}
 }
 $sources=@("$taskRoot\windows\UpdatePackage.cs","$taskRoot\windows\WindowsUpdates.cs","$OutputDirectory\UpdateKey.cs")
-& "$framework\csc.exe" @common /target:winexe "/out:$OutputDirectory\Blizko.Updater.exe" @sources "$taskRoot\windows\updater\Program.cs"
+# Keep the isolated fixture independent of a real Blizko instance on the host.
+$helperSource=[IO.File]::ReadAllText("$taskRoot\windows\updater\Program.cs").Replace('Local\\Blizko.Windows.UI',('Local\\Blizko.UpdateFixture.'+[Guid]::NewGuid().ToString('N')))
+[IO.File]::WriteAllText("$OutputDirectory\UpdaterFixture.cs",$helperSource)
+& "$framework\csc.exe" @common /target:winexe "/out:$OutputDirectory\Blizko.Updater.exe" @sources "$OutputDirectory\UpdaterFixture.cs"
 if($LASTEXITCODE -ne 0){throw 'Updater fixture compilation failed'}
 Copy-Item -LiteralPath "$taskRoot\windows\Blizko.exe.config" -Destination "$OutputDirectory\Blizko.Updater.exe.config"
 & "$framework\csc.exe" @common /target:exe "/out:$OutputDirectory\UpdateRegression.exe" @sources "$taskRoot\windows\tests\UpdateRegression.cs"

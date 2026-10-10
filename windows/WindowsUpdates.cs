@@ -62,10 +62,16 @@ namespace Blizko {
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             return new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false }) { Timeout = Timeout.InfiniteTimeSpan };
         }
+        // On .NET Framework a response-body read can outlive SendAsync's
+        // cancellation. Closing the response also interrupts a stalled body.
+        internal static CancellationTokenRegistration AbortBodyOnCancel(HttpResponseMessage response, CancellationToken cancel) {
+            return cancel.Register(() => { try { response.Dispose(); } catch (Exception) { } });
+        }
         internal static async Task<string> Check(CancellationToken cancel) {
             using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancel)) using (var client = Client()) {
                 deadline.CancelAfter(TimeSpan.FromSeconds(30));
                 using (var response = await Get(client, Feed + "?check=" + DateTime.UtcNow.Ticks, deadline.Token).ConfigureAwait(false))
+                using (var abort = AbortBodyOnCancel(response, deadline.Token))
                 using (var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false)) using (var output = new MemoryStream()) {
                     var bytes = new byte[8192]; int count;
                     while ((count = await input.ReadAsync(bytes, 0, bytes.Length, deadline.Token).ConfigureAwait(false)) != 0) { if (output.Length + count > 65536) throw new InvalidDataException("Описание обновления слишком большое."); output.Write(bytes, 0, count); }
@@ -82,7 +88,7 @@ namespace Blizko {
             try {
                 using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancel)) using (var client = Client()) {
                     deadline.CancelAfter(TimeSpan.FromMinutes(10));
-                    using (var response = await Get(client, release.url, deadline.Token).ConfigureAwait(false)) {
+                    using (var response = await Get(client, release.url, deadline.Token).ConfigureAwait(false)) using (var abort = AbortBodyOnCancel(response, deadline.Token)) {
                         if (response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength.Value != release.size) throw new InvalidDataException("Размер загрузки не совпадает с описанием обновления.");
                         using (var input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false)) using (var output = new FileStream(Path.Combine(directory, "package.zip"), FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true)) {
                             var bytes = new byte[65536]; long copied = 0; int count, reported = -1;
@@ -97,7 +103,7 @@ namespace Blizko {
                 }
                 await Task.Run(() => { cancel.ThrowIfCancellationRequested(); UpdatePackage.Extract(Path.Combine(directory, "package.zip"), Path.Combine(directory, "verified"), release); }, cancel).ConfigureAwait(false);
                 UpdatePackage.WriteAtomic(Path.Combine(directory, "manifest.json"), Encoding.UTF8.GetBytes(manifest)); return prepared;
-            } catch { Discard(prepared); throw; }
+            } catch { Discard(prepared); cancel.ThrowIfCancellationRequested(); throw; }
         }
         internal static void Discard(PreparedUpdate update) {
             if (update == null) return;

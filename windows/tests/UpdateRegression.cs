@@ -7,9 +7,19 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Net.Http;
 using Blizko;
 
 class UpdateRegression {
+    sealed class StalledStream:Stream {
+        readonly TaskCompletionSource<int> pending=new TaskCompletionSource<int>();
+        public override Task<int> ReadAsync(byte[] bytes,int offset,int count,CancellationToken cancel){return pending.Task;}
+        protected override void Dispose(bool disposing){pending.TrySetException(new ObjectDisposedException("stalled body"));base.Dispose(disposing);}
+        public override bool CanRead{get{return true;}}public override bool CanWrite{get{return false;}}public override bool CanSeek{get{return false;}}
+        public override long Length{get{throw new NotSupportedException();}}public override long Position{get{throw new NotSupportedException();}set{throw new NotSupportedException();}}
+        public override int Read(byte[] bytes,int offset,int count){throw new NotSupportedException();}public override void Write(byte[] bytes,int offset,int count){throw new NotSupportedException();}public override long Seek(long offset,SeekOrigin origin){throw new NotSupportedException();}public override void SetLength(long value){throw new NotSupportedException();}public override void Flush(){}
+    }
     static string root;
     const string Config="<?xml version=\"1.0\"?><configuration><startup><supportedRuntime version=\"v4.0\"/></startup></configuration>";
     static void Assert(bool condition,string reason){if(!condition)throw new Exception(reason);}
@@ -30,6 +40,10 @@ class UpdateRegression {
         release.url="http://github.com/iroshcha/blizko/releases/download/test/Blizko-Windows-x64.zip";Reject(()=>UpdatePackage.Verify(Sign(release)),"HTTP update");release=Release(valid);
         release.url="https://example.com/Blizko-Windows-x64.zip";Reject(()=>UpdatePackage.Verify(Sign(release)),"foreign download host");release=Release(valid);
         Console.WriteLine("PASS: valid signature, tampering, wrong key and unsafe URLs");
+        using(var response=new HttpResponseMessage{Content=new StreamContent(new StalledStream())})using(var cancel=new CancellationTokenSource())using(WindowsUpdates.AbortBodyOnCancel(response,cancel.Token)){
+            var stream=response.Content.ReadAsStreamAsync().GetAwaiter().GetResult();var pending=stream.ReadAsync(new byte[1],0,1,cancel.Token);cancel.Cancel();Assert(pending.IsCompleted&&pending.IsFaulted,"cancellation did not interrupt stalled response body");var observed=pending.Exception;
+        }
+        Console.WriteLine("PASS: cancellation interrupts stalled response-body reads");
         string damaged=Path.Combine(root,"damaged.zip");File.Copy(valid,damaged);using(var f=new FileStream(damaged,FileMode.Open,FileAccess.Write)){f.Position=20;f.WriteByte(123);}Reject(()=>UpdatePackage.VerifyArchive(damaged,release),"corrupt archive");
         string traversal=Zip("traversal","../escaped.txt");Reject(()=>UpdatePackage.Extract(traversal,Path.Combine(root,"unsafe"),Release(traversal)),"ZIP path traversal");Assert(!File.Exists(Path.Combine(root,"escaped.txt")),"escaped ZIP path written");
         string duplicate=Zip("duplicate",null,true);Reject(()=>UpdatePackage.Extract(duplicate,Path.Combine(root,"duplicate"),Release(duplicate)),"duplicate ZIP entry");
