@@ -2,7 +2,7 @@ name: Build iroh native transport
 on:
   workflow_dispatch:
   push:
-    branches: [codex/iroh-transport]
+    branches: [codex/iroh-transport, codex/windows-app]
     paths: ['core/**', 'app/**', 'ios/**', 'scripts/**', '.github/workflows/iroh-native.yml']
 permissions:
   contents: read

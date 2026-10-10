@@ -1,5 +1,5 @@
 //! A bounded request/response bridge. Chat storage and message authentication stay in Go.
-use iroh::{Endpoint, EndpointId, SecretKey, endpoint::presets};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl, SecretKey, endpoint::presets};
 use n0_watcher::Watcher;
 use serde_json::{Value, json};
 use std::{collections::HashMap, ffi::{CStr, CString, c_char}, sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}}, time::Duration};
@@ -9,10 +9,12 @@ use tokio::{runtime::Runtime, sync::{mpsc, oneshot, Semaphore}};
 mod windows_test;
 
 const ALPN: &[u8] = b"blizko/chat/3";
+const HOME_RELAY: &str = "https://ample-raven-6363.ru.tuna.am/";
 const MAX_PACKET: usize = 20_000;
 type Reply = oneshot::Sender<String>;
 struct Node {
     endpoint: Endpoint,
+    relay: RelayUrl,
     incoming: tokio::sync::Mutex<mpsc::Receiver<Value>>,
     replies: Mutex<HashMap<u64, Reply>>,
 }
@@ -45,7 +47,6 @@ fn connect_error<E: std::fmt::Display>(error: E) -> String {
     "connection_failed".into()
 }
 
-#[cfg(windows)]
 fn configured_relay(raw: &str) -> Result<iroh::RelayUrl, String> {
     let url: iroh::RelayUrl = raw.parse().map_err(|_| "invalid_relay_url".to_owned())?;
     let local = matches!(url.host_str(), Some("127.0.0.1") | Some("[::1]"));
@@ -55,6 +56,15 @@ fn configured_relay(raw: &str) -> Result<iroh::RelayUrl, String> {
         return Err("invalid_relay_url".into());
     }
     Ok(url)
+}
+
+fn selected_relay() -> Result<RelayUrl, String> {
+    // Desktop overrides are retained for local transport tests and explicit diagnostics.
+    #[cfg(windows)]
+    if let Ok(raw) = std::env::var("BLIZKO_RELAY_URL") {
+        return configured_relay(&raw);
+    }
+    configured_relay(HOME_RELAY)
 }
 
 async fn serve(node: Arc<Node>, tx: mpsc::Sender<Value>) {
@@ -89,13 +99,12 @@ async fn dispatch(v: Value) -> Result<Value, String> {
     let op = text(&v, "op")?;
     if op == "start" {
         let key: [u8;32] = hex::decode(text(&v, "key")?).map_err(err)?.try_into().map_err(err)?;
-        let mut builder = Endpoint::builder(presets::N0).secret_key(SecretKey::from_bytes(&key)).alpns(vec![ALPN.to_vec()]);
-        #[cfg(windows)]
-        if let Ok(raw) = std::env::var("BLIZKO_RELAY_URL") {
-            builder = builder.relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from_iter([
-                configured_relay(&raw)?,
-            ])));
-        }
+        let relay = selected_relay()?;
+        // All app versions know the same home relay, so peer IDs need no public lookup.
+        // IP transports stay enabled: iroh can upgrade to a direct connection via discovery.
+        let mut builder = Endpoint::builder(presets::Minimal).secret_key(SecretKey::from_bytes(&key))
+            .alpns(vec![ALPN.to_vec()])
+            .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from_iter([relay.clone()])));
         #[cfg(all(test, windows))]
         if let Ok(path) = std::env::var("BLIZKO_TEST_LOCAL_CERT") {
             let certificate = std::fs::read(path).unwrap();
@@ -105,7 +114,7 @@ async fn dispatch(v: Value) -> Result<Value, String> {
         let endpoint = builder.bind().await.map_err(err)?;
         let address = endpoint.id().to_string();
         let (tx, rx) = mpsc::channel(8);
-        let node = Arc::new(Node { endpoint, incoming: tokio::sync::Mutex::new(rx), replies: Mutex::new(HashMap::new()) });
+        let node = Arc::new(Node { endpoint, relay, incoming: tokio::sync::Mutex::new(rx), replies: Mutex::new(HashMap::new()) });
         let handle = SEQUENCE.fetch_add(1, Ordering::Relaxed);
         nodes().lock().unwrap().insert(handle, node.clone());
         tokio::spawn(serve(node, tx));
@@ -143,7 +152,8 @@ async fn dispatch(v: Value) -> Result<Value, String> {
             let data = text(&v, "data")?;
             if data.len() > MAX_PACKET { return Err("too_large".into()); }
             tokio::time::timeout(Duration::from_secs(15), async {
-                let conn = node.endpoint.connect(peer, ALPN).await.map_err(connect_error)?;
+                let address = EndpointAddr::new(peer).with_relay_url(node.relay.clone());
+                let conn = node.endpoint.connect(address, ALPN).await.map_err(connect_error)?;
                 let result = async {
                     let (mut send, mut recv) = conn.open_bi().await.map_err(err)?;
                     send.write_all(data.as_bytes()).await.map_err(err)?;

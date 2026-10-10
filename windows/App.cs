@@ -280,7 +280,7 @@ namespace Blizko {
             var apply = new Button { Content = "Сохранить", Background = Green, Foreground = Brushes.White, IsEnabled = engine != null && !fatal };
             apply.Click += async delegate { apply.IsEnabled = false; try { Apply((await engine.Request("relay", value: relay.IsChecked == true)).snapshot); dialog.Close(); } catch (Exception e) { Notice(e.Message); apply.IsEnabled = true; } };
             content.Children.Add(apply);
-            content.Children.Add(new TextBlock { Text = "Близко 0.2.0 · Windows", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 24, 0, 12) });
+            content.Children.Add(new TextBlock { Text = "Близко 0.2.1 · Windows", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 24, 0, 12) });
             content.Children.Add(Label("Регистрация не нужна. Ключи создаются автоматически. История хранится на этом компьютере. Закрытие окна оставляет приложение в трее; «Выйти» останавливает приём."));
             content.Children.Add(Label("Windows — отдельный контакт; синхронизации с вашей историей на телефоне пока нет. На iPhone для доставки нужно открыть приложение."));
             var release = new Button { Content = "Открыть страницу релизов", Background = Brushes.Transparent };

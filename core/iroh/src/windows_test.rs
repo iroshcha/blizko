@@ -9,8 +9,12 @@ fn windows_relay_round_trip() {
         let ah = a["handle"].as_u64().unwrap();
         let bh = b["handle"].as_u64().unwrap();
         tokio::time::sleep(Duration::from_secs(5)).await;
-        eprintln!("A status {}", dispatch(json!({"op":"status","handle":ah})).await.unwrap());
-        eprintln!("B status {}", dispatch(json!({"op":"status","handle":bh})).await.unwrap());
+        let expected = selected_relay().unwrap().to_string();
+        for handle in [ah, bh] {
+            let status = dispatch(json!({"op":"status","handle":handle})).await.unwrap();
+            assert_eq!(status["relay"], expected, "wrong home relay");
+            assert_eq!(status["online"], true, "home relay is not connected");
+        }
         let sender = tokio::spawn(dispatch(json!({"op":"exchange","handle":ah,"peer":b["address"],"data":"windows transport test"})));
         let receiver = async {
             loop {
@@ -28,6 +32,30 @@ fn windows_relay_round_trip() {
         dispatch(json!({"op":"close","handle":bh})).await.unwrap();
         assert!(received.is_ok(), "receiver timed out; exchange result: {result:?}");
         assert_eq!(result.unwrap()["data"], "authenticated reply fixture");
+    });
+}
+
+#[test]
+fn windows_direct_connection_upgrades_from_home_relay() {
+    if std::env::var("BLIZKO_NETWORK_SMOKE").as_deref() != Ok("1") { return; }
+    runtime().block_on(async {
+        let a = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":false})).await.unwrap();
+        let b = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":false})).await.unwrap();
+        let ah = a["handle"].as_u64().unwrap();
+        let bh = b["handle"].as_u64().unwrap();
+        let an = nodes().lock().unwrap().get(&ah).unwrap().clone();
+        let bn = nodes().lock().unwrap().get(&bh).unwrap().clone();
+        let address = EndpointAddr::new(bn.endpoint.id()).with_relay_url(an.relay.clone());
+        let conn = an.endpoint.connect(address, ALPN).await.unwrap();
+        let upgraded = tokio::time::timeout(Duration::from_secs(15), async {
+            while !conn.paths().iter().any(|path| path.is_ip() && path.is_selected()) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }).await;
+        conn.close(0u32.into(), b"test done");
+        dispatch(json!({"op":"close","handle":ah})).await.unwrap();
+        dispatch(json!({"op":"close","handle":bh})).await.unwrap();
+        assert!(upgraded.is_ok(), "same-computer peers did not select a direct IP path");
     });
 }
 
