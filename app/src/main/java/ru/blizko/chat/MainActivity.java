@@ -26,7 +26,7 @@ public final class MainActivity extends Activity {
     private String query="",checkPeer="";
     private final Map<String,String> drafts=new HashMap<>();
     private final Map<String,Long> readOrders=new HashMap<>();
-    private boolean openingUnread=false,jumpLatest=false,sending=false,checking=false;
+    private boolean openingUnread=false,scrollUnread=false,jumpLatest=false,sending=false,checking=false;
     private Runnable saveDraft;
     private EditText compose;
     private TextView connectionStatus;
@@ -39,7 +39,7 @@ public final class MainActivity extends Activity {
     private final Runnable poll=new Runnable(){public void run(){
         String availableUpdate=AutoUpdates.prefs(MainActivity.this).getString("available","");
         if(!availableUpdate.equals(updateInfo)){updateInfo=availableUpdate;pageRevision=-1;}
-        if(app.node==null){if(root==null)render("");}
+        if(app.node==null){if(root==null||app.startupError!=null&&!app.startupError.equals(contentKey)){contentKey=app.startupError;render("");}}
         else if(!polling){
             polling=true;String target=peer,search=query;long cursor=before,known=pageRevision;boolean unread=openingUnread;
             (search.isEmpty()?app.io:app.network).execute(()->{
@@ -53,7 +53,7 @@ public final class MainActivity extends Activity {
                     if(!active||!target.equals(peer)||cursor!=before||!search.equals(query))return;
                     if(result!=null)try{
                         JSONObject s=new JSONObject(result);last=result;pageRevision=s.optLong("revision");
-                        if(unread){before=s.optLong("before");openingUnread=false;}
+                        if(unread){before=s.optLong("before");openingUnread=false;scrollUnread=true;}
                         String key=target+":"+before+":"+search+":"+s.optBoolean("enabled")+":"+s.opt("contacts")+":"+s.opt("messages")+":"+s.opt("deliveryIssues")+":"+s.opt("previews")+":"+s.opt("unread")+":"+s.opt("clear")+":"+s.opt("sending")+":"+s.opt("storageIssue")+":"+AutoUpdates.prefs(MainActivity.this).getString("available","");
                         if(root==null||!key.equals(contentKey)){contentKey=key;render(result);}
                         if(connectionStatus!=null)connectionStatus.setText((s.optBoolean("online")?"●  ":"○  ")+s.optString("status"));
@@ -127,7 +127,9 @@ public final class MainActivity extends Activity {
             if(!s.optString("storageIssue").isEmpty())root.addView(text(s.optString("storageIssue"),14,MUTED));
             if(peer.isEmpty())home(s);else conversation(s);
             if(compose!=null&&focused){compose.requestFocus();compose.setSelection(Math.min(Math.max(selection,0),compose.length()));}
-            if(historyScroll!=null){ScrollView current=historyScroll;boolean latest=jumpLatest||(before==0&&query.isEmpty()&&atEnd);jumpLatest=false;current.post(()->{if(current!=historyScroll)return;if(latest)current.fullScroll(View.FOCUS_DOWN);else current.scrollTo(0,samePage?offset:0);markVisible(current);});}
+            if(historyScroll!=null){ScrollView current=historyScroll;boolean latest=jumpLatest||(before==0&&query.isEmpty()&&atEnd);jumpLatest=false;JSONObject firstUnread=s.optJSONObject("firstUnread");long first=scrollUnread&&firstUnread!=null?firstUnread.optLong(peer):0;scrollUnread=false;
+                current.post(()->{if(current!=historyScroll)return;View unreadRow=null;LinearLayout rows=(LinearLayout)current.getChildAt(0);if(first>0)for(int i=0;i<rows.getChildCount();i++){View row=rows.getChildAt(i);if(row.getTag() instanceof Long&&((Long)row.getTag())==first){unreadRow=row;break;}}
+                    if(unreadRow!=null)current.scrollTo(0,Math.max(0,unreadRow.getTop()-dp(30)));else if(latest)current.fullScroll(View.FOCUS_DOWN);else current.scrollTo(0,samePage?offset:0);markVisible(current);});}
         }catch(Exception e){root.addView(text("Не удалось отобразить чат",16,MUTED));}
     }
     private String peerName(JSONObject s,String id){JSONArray a=s.optJSONArray("contacts");if(a!=null)for(int i=0;i<a.length();i++){JSONObject c=a.optJSONObject(i);if(c!=null&&id.equals(c.optString("id")))return c.optString("name");}return "Чат";}

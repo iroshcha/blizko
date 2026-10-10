@@ -31,7 +31,7 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
                 result.putString("stream","OK: explicit stop disables receive and automatic restart");finish(Activity.RESULT_OK,result);return;
             }
             testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testConversationTools();testApk();testAutomaticUpdates();IrohDeliveryCheck.run(getTargetContext());
-            result.putString("stream","OK: repeated startup, paged history and focused draft, QR, APK validation, persistent update scheduling and deduplicated notifications, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);
+            result.putString("stream","OK: repeated startup, paged history, per-contact drafts, full history search, message cancel and retry, QR, APK validation, persistent update scheduling and deduplicated notifications, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);
         }
         catch(Throwable failure){result.putString("stream","FAIL: "+failure.getClass().getSimpleName()+": "+failure.getMessage());finish(Activity.RESULT_CANCELED,result);}
     }

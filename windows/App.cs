@@ -52,7 +52,8 @@ namespace Blizko {
         private string peer = "", lastConversation = "", lastContacts = "";
         private long before, pageRevision = -1;
         private bool pageDirty = true;
-        private bool openingUnread, checking, restoringDraft;
+        private bool openingUnread, scrollUnread, checking, restoringDraft;
+        private string checkingPeer="";
         private string historyQuery="", notificationPeer="";
         private readonly Dictionary<string,long> readOrders=new Dictionary<string,long>();
         private Dictionary<string,int> previousUnread;
@@ -94,8 +95,8 @@ namespace Blizko {
             draftTimer.Tick += async delegate {draftTimer.Stop();await SaveDraft(peer);};
             check.Click += async delegate {
                 if(engine==null)return;string target=peer;
-                if(checking){await engine.Request("check-cancel",target);return;}
-                checking=true;check.Content="Отменить проверку";
+                if(checking){await engine.Request("check-cancel",checkingPeer);return;}
+                checking=true;checkingPeer=target;check.Content="Отменить проверку";
                 try{Notice((await engine.Request("check",target)).code);}catch(Exception e){Notice(e.Message);}
                 finally{checking=false;check.Content="Проверить связь";}
             };
@@ -193,7 +194,7 @@ namespace Blizko {
                     string target = peer; long cursor = before;
                     bool unread=openingUnread;string query=historyQuery;
                     Reply page = await engine.Request(unread?"unread":query==""?"page":"search", target,query,before: cursor);
-                    if (peer == target && before == cursor && query==historyQuery) {if(unread){before=page.snapshot.before;openingUnread=false;}pageDirty = false; pageRevision = page.snapshot.revision; Apply(page.snapshot); }
+                    if (peer == target && before == cursor && query==historyQuery) {if(unread){before=page.snapshot.before;openingUnread=false;scrollUnread=true;}pageDirty = false; pageRevision = page.snapshot.revision; Apply(page.snapshot); }
                 }
             }
             catch (Exception) { fatal = true; timer.Stop(); status.Text = "Приём остановлен · откройте приложение заново"; UpdateButtons(); }
@@ -284,7 +285,7 @@ namespace Blizko {
             issueBox.Visibility = hasIssue ? Visibility.Visible : Visibility.Collapsed;
             UpdateButtons();
             var conversation = snapshot.messages.Where(m => m.peer == peer).ToList();
-            string key = peer + ":"+before+":"+historyQuery+"\n" + String.Join("\n", conversation.Select(m => m.id + ":" + m.delivered+":"+m.cancelled+":"+m.failure+":"+(snapshot.sending!=null&&snapshot.sending.ContainsKey(peer)?snapshot.sending[peer]:"")));
+            string key = peer + ":"+before+":"+historyQuery+"\n" + snapshot.enabled+":"+(snapshot.firstUnread!=null&&snapshot.firstUnread.ContainsKey(peer)?snapshot.firstUnread[peer]:0)+"\n"+String.Join("\n", conversation.Select(m => m.id + ":" + m.delivered+":"+m.cancelled+":"+m.failure+":"+(snapshot.sending!=null&&snapshot.sending.ContainsKey(peer)?snapshot.sending[peer]:"")));
             if (key == lastConversation) return;bool changedPage=!lastConversation.StartsWith(peer+":"+before+":"+historyQuery+"\n",StringComparison.Ordinal); lastConversation = key;
             double offset = scroll.VerticalOffset;
             bool atEnd = scroll.ExtentHeight - scroll.VerticalOffset - scroll.ViewportHeight < 40;
@@ -310,7 +311,9 @@ namespace Blizko {
                     if(!message.cancelled){var cancel=new MenuItem{Header="Отменить отправку"};cancel.Click+=async delegate{if(MessageBox.Show(Window,"Повторные попытки прекратятся. Если собеседник уже получил сообщение, отмена не удалит его у него.","Отменить отправку?",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)await Action(async()=>{await engine.Request("cancel",message.peer,message.id);});};menu.Items.Add(cancel);}}
                 bubble.ContextMenu=menu;messages.Children.Add(bubble);
             }
-            if (before == 0 && historyQuery=="" && (atEnd || conversation.Count < 2)) scroll.Dispatcher.BeginInvoke(new System.Action(()=>{scroll.ScrollToEnd();MarkVisibleRead(lastDisplayed);}), DispatcherPriority.Loaded);
+            Border unreadBubble=scrollUnread&&unreadFirst>0?messages.Children.OfType<Border>().FirstOrDefault(b=>b.Tag is long&&(long)b.Tag==unreadFirst):null;scrollUnread=false;
+            if(unreadBubble!=null)scroll.Dispatcher.BeginInvoke(new System.Action(()=>{if(unreadBubble.Parent==messages)scroll.ScrollToVerticalOffset(Math.Max(0,unreadBubble.TranslatePoint(new Point(),messages).Y-30));}),DispatcherPriority.Loaded);
+            else if (before == 0 && historyQuery=="" && (atEnd || conversation.Count < 2)) scroll.Dispatcher.BeginInvoke(new System.Action(()=>{scroll.ScrollToEnd();MarkVisibleRead(lastDisplayed);}), DispatcherPriority.Loaded);
             else scroll.Dispatcher.BeginInvoke(new System.Action(() => scroll.ScrollToVerticalOffset(changedPage?0:offset)), DispatcherPriority.Loaded);
         }
         private async void MarkVisibleRead(long order){
