@@ -14,8 +14,6 @@
     return bridge;
 }
 - (NSString *)snapshot { return self.node ? [self.node snapshot] : @"{}"; }
-- (NSString *)status { return self.node ? [self.node status] : @"{}"; }
-- (NSString *)page:(NSString *)peer before:(int64_t)before { return self.node ? [self.node snapshotPage:peer before:before limit:50] : @"{}"; }
 - (NSString *)command:(NSString *)name first:(NSString *)first second:(NSString *)second {
     NSError *error = nil; NSString *code = nil;
     if (!self.node) return @"{\"error\":\"Хранилище недоступно\"}";
@@ -23,7 +21,6 @@
     else if ([name isEqualToString:@"stop"]) [self.node stop];
     else if ([name isEqualToString:@"add"]) [self.node addContact:first code:second error:&error];
     else if ([name isEqualToString:@"send"]) [self.node send:first text:second error:&error];
-    else if ([name isEqualToString:@"clear"]) [self.node clearHistory:first error:&error];
     else if ([name isEqualToString:@"code"]) code = [self.node myCode:&error];
     else if ([name isEqualToString:@"check"]) code = [self.node checkContact:first error:&error];
     else if ([name isEqualToString:@"relay"]) [self.node setRelayOnly:[first isEqualToString:@"true"] error:&error];

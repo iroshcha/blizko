@@ -12,7 +12,6 @@ struct ChatMessage: Decodable, Identifiable {
     let out: Bool
     let delivered: Bool
     let time: Int64
-    let order: Int64
 }
 struct Snapshot: Decodable {
     var status: String = "Открываем хранилище…"
@@ -26,9 +25,6 @@ struct Snapshot: Decodable {
     var relay = ""
     var relayOnly = false
     var deliveryIssues: [String: String]?
-    var revision: UInt64 = 0
-    var hasMore = false
-    var previews: [String: String] = [:]
 }
 
 @MainActor final class ChatModel: ObservableObject {
@@ -39,9 +35,6 @@ struct Snapshot: Decodable {
     private let queue = DispatchQueue(label: "ru.blizko.core")
     private var timer: Timer?
     private var polling = false
-    private var peer = ""
-    private(set) var before: Int64 = 0
-    private var dirty = true
 
     init() {
         queue.async { [weak self] in
@@ -66,16 +59,10 @@ struct Snapshot: Decodable {
     }
     func refresh() {
         guard let node, !polling else { return }; polling = true
-        let target = peer, cursor = before, known = snapshot.revision, force = dirty
         queue.async { [weak self] in
-            let status = try? JSONSerialization.jsonObject(with: Data(node.status().utf8)) as? [String: Any]
-            let revision = (status?["revision"] as? NSNumber)?.uint64Value
-            let next: Snapshot? = force || revision != known ? (try? JSONDecoder().decode(Snapshot.self, from: Data(node.page(target, before: cursor).utf8))) : nil
-            DispatchQueue.main.async {
-                guard let self else { return }; self.polling = false
-                guard self.peer == target && self.before == cursor else { self.refresh(); return }
-                if let next { self.snapshot = next; self.dirty = false }
-            }
+            let raw = node.snapshot()
+            let next = try? JSONDecoder().decode(Snapshot.self, from: Data(raw.utf8))
+            DispatchQueue.main.async { if let next { self?.snapshot = next }; self?.polling = false }
         }
     }
     private func perform(_ name: String, first: String = "", second: String = "", success: ((String) -> Void)? = nil) {
@@ -92,10 +79,6 @@ struct Snapshot: Decodable {
         }
     }
     func toggle() { perform(snapshot.enabled ? "stop" : "start") }
-    func select(_ peer: String) { self.peer = peer; before = 0; dirty = true; refresh() }
-    func older() { if let row = snapshot.messages.first { before = row.order; dirty = true; refresh() } }
-    func recent() { before = 0; dirty = true; refresh() }
-    func clear(_ peer: String) { perform("clear", first: peer) { [weak self] _ in self?.recent() } }
     func setRelayOnly(_ value: Bool) { perform("relay", first: value ? "true" : "false") }
     func checkContact(_ peer: String) { perform("check", first: peer) { [weak self] result in self?.error = result } }
     func add(name: String, code: String, success: @escaping () -> Void) { perform("add", first: name, second: code) { _ in success() } }

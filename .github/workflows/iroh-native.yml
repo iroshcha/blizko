@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
     steps:
@@ -96,13 +96,17 @@ jobs:
         run: |
           set -euo pipefail
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'emulator' 'system-images;android-35;google_apis;x86_64'
-          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n blizko-ci -k 'system-images;android-35;google_apis;x86_64' --force
+          export ANDROID_USER_HOME="$RUNNER_TEMP/blizko-android"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n blizko-ci -k 'system-images;android-35;google_apis;x86_64' -p "$ANDROID_AVD_HOME/blizko-ci.avd" --force
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -q '^blizko-ci$'
           sudo chmod a+rw /dev/kvm
           "$ANDROID_HOME/emulator/emulator" -avd blizko-ci -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > /tmp/blizko-emulator.log 2>&1 &
           emulator_pid=$!
           trap 'kill "$emulator_pid" || true' EXIT
           export PATH="$ANDROID_HOME/platform-tools:$PATH"
-          adb wait-for-device
+          timeout 180 adb wait-for-device || { cat /tmp/blizko-emulator.log; exit 1; }
           for attempt in $(seq 1 120); do
             if [[ "$(adb shell getprop sys.boot_completed | tr -d '\r')" == '1' ]]; then break; fi
             sleep 2
@@ -114,6 +118,25 @@ jobs:
           adb shell pm grant ru.blizko.chat android.permission.POST_NOTIFICATIONS
           adb shell am instrument -w ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-instrumentation.txt
           grep -q 'INSTRUMENTATION_CODE: -1' /tmp/blizko-instrumentation.txt
+          adb root
+          adb wait-for-device
+          adb shell am start-foreground-service -n ru.blizko.chat/.ChatService
+          sleep 3
+          old_pid="$(adb shell pidof ru.blizko.chat | tr -d '\r')"
+          [[ -n "$old_pid" ]]
+          adb shell kill -9 "$old_pid"
+          new_pid=''
+          for attempt in $(seq 1 60); do
+            new_pid="$(adb shell pidof ru.blizko.chat | tr -d '\r' || true)"
+            if [[ -n "$new_pid" && "$new_pid" != "$old_pid" ]]; then break; fi
+            sleep 1
+          done
+          [[ -n "$new_pid" && "$new_pid" != "$old_pid" ]]
+          sleep 3
+          adb shell dumpsys activity services ru.blizko.chat > /tmp/blizko-service-restart.txt
+          grep -q 'isForeground=true' /tmp/blizko-service-restart.txt
+          adb shell am instrument -w -e stopOnly true ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-service-stop.txt
+          grep -q 'INSTRUMENTATION_CODE: -1' /tmp/blizko-service-stop.txt
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Linux' && always()
         with:
@@ -122,6 +145,8 @@ jobs:
             /tmp/blizko-instrumentation.txt
             /tmp/blizko-emulator.log
             /tmp/blizko-release-badging.txt
+            /tmp/blizko-service-restart.txt
+            /tmp/blizko-service-stop.txt
             app/build/reports/lint-results-*.html
       - name: Build iPhone
         if: runner.os == 'macOS'

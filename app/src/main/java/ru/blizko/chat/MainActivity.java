@@ -173,6 +173,10 @@ public final class MainActivity extends Activity {
             new AlertDialog.Builder(this).setTitle("Соединение iroh")
                 .setSingleChoiceItems(new String[]{"Автоматически: напрямую или через ретранслятор","Только через ретранслятор (проверка)"},relay?1:0,(dialog,which)->{
                     work(()->app.node.setRelayOnly(which==1));dialog.dismiss();
+                }).setNeutralButton("Адрес сервера",(dialog,which)->{
+                    EditText address=input("https://…");try{address.setText(new JSONObject(last).optString("relayURL"));}catch(Exception ignored){}
+                    AlertDialog edit=new AlertDialog.Builder(this).setTitle("Домашний сервер").setMessage("Укажите одинаковый HTTPS-адрес на всех устройствах. Пустое поле вернёт исходный адрес.").setView(address).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
+                    edit.setOnShowListener(v->edit.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b->{String value=address.getText().toString();work(()->{app.node.setRelayURL(value);runOnUiThread(edit::dismiss);});}));edit.show();
                 }).setNegativeButton("Закрыть",null).show();
         }catch(Exception e){notice("Хранилище ещё открывается");}
     }

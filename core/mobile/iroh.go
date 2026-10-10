@@ -8,6 +8,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +26,9 @@ type bridgeResult struct {
 	Relay   string `json:"relay"`
 	Error   string `json:"error"`
 }
+
+const homeRelayURL = "https://ample-raven-6363.ru.tuna.am/"
+
 type irohLink struct {
 	handle uint64
 	once   sync.Once
@@ -115,10 +121,10 @@ func (n *Node) startLocked() error {
 		n.mu.Unlock()
 		return nil
 	}
-	seed, relayOnly, address := n.state.IrohSeed, n.state.RelayOnly, n.state.Address
+	seed, relayOnly, address, relayURL := n.state.IrohSeed, n.state.RelayOnly, n.state.Address, n.state.RelayURL
 	peers := n.allowedLocked()
 	n.mu.Unlock()
-	result, err := bridge(map[string]any{"op": "start", "key": hex.EncodeToString(seed[:]), "relayOnly": relayOnly, "peers": peers})
+	result, err := bridge(map[string]any{"op": "start", "key": hex.EncodeToString(seed[:]), "relayOnly": relayOnly, "peers": peers, "relayURL": relayURL})
 	if err != nil {
 		return errors.New("Не удалось запустить iroh. Выключите и включите приём.")
 	}
@@ -292,6 +298,44 @@ func (n *Node) irohPacket(remote, data string) wireResponse {
 }
 
 // SetRelayOnly is a persistent diagnostic mode. Restart the endpoint, never the identity.
+func (n *Node) SetRelayURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = homeRelayURL
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" {
+		return errors.New("Введите HTTPS-адрес сервера без логина, пути и параметров")
+	}
+	if u.Port() != "" {
+		port, e := strconv.Atoi(u.Port())
+		if e != nil || port < 1 || port > 65535 {
+			return errors.New("Неверный порт сервера")
+		}
+	}
+	u.Path = "/"
+	raw = u.String()
+	n.life.Lock()
+	defer n.life.Unlock()
+	n.mu.Lock()
+	if n.state.RelayURL == raw {
+		n.mu.Unlock()
+		return nil
+	}
+	state := n.clone()
+	state.RelayURL = raw
+	enabled := n.enabled
+	err = n.commit(state)
+	n.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if enabled {
+		n.stopLocked()
+		return n.startLocked()
+	}
+	return nil
+}
 func (n *Node) SetRelayOnly(value bool) error {
 	n.life.Lock()
 	defer n.life.Unlock()

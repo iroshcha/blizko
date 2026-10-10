@@ -63,6 +63,8 @@ func run(input io.Reader, output io.Writer, node *mobile.Node) error {
 				result.Code, err = node.CheckContact(request.First)
 			case "relay":
 				err = node.SetRelayOnly(request.Value)
+			case "server":
+				err = node.SetRelayURL(request.First)
 			case "network":
 				node.NetworkChanged()
 			case "quit":

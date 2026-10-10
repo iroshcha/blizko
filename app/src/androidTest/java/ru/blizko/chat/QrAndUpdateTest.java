@@ -20,7 +20,19 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
     private void check(boolean value,String reason){if(!value)throw new AssertionError(reason);}
     @Override public void onStart(){
         Bundle result=new Bundle();
-        try{testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testApk();IrohDeliveryCheck.run(getTargetContext());result.putString("stream","OK: repeated startup, paged history and focused draft, QR, APK validation, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);}
+        try{
+            if(arguments!=null&&"true".equals(arguments.getString("stopOnly"))){
+                getTargetContext().startService(new Intent(getTargetContext(),ChatService.class).setAction("STOP"));
+                long until=System.currentTimeMillis()+10000;
+                while(getTargetContext().getSharedPreferences("connection",Context.MODE_PRIVATE).getBoolean("receiveEnabled",false)&&System.currentTimeMillis()<until)Thread.sleep(100);
+                check(!getTargetContext().getSharedPreferences("connection",Context.MODE_PRIVATE).getBoolean("receiveEnabled",false),"Explicit stop retained restart intention");
+                ChatApp app=(ChatApp)getTargetContext().getApplicationContext();app.io.submit(()->{}).get(60,java.util.concurrent.TimeUnit.SECONDS);
+                check(!new JSONObject(app.node.status()).getBoolean("enabled"),"Explicit stop left node enabled");
+                result.putString("stream","OK: explicit stop disables receive and automatic restart");finish(Activity.RESULT_OK,result);return;
+            }
+            testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testApk();IrohDeliveryCheck.run(getTargetContext());
+            result.putString("stream","OK: repeated startup, paged history and focused draft, QR, APK validation, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);
+        }
         catch(Throwable failure){result.putString("stream","FAIL: "+failure.getClass().getSimpleName()+": "+failure.getMessage());finish(Activity.RESULT_CANCELED,result);}
     }
     private String contact()throws Exception{

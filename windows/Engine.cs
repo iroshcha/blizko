@@ -30,6 +30,7 @@ namespace Blizko {
         public bool enabled { get; set; }
         public bool online { get; set; }
         public bool relayOnly { get; set; }
+        public string relayURL { get; set; }
         public int incoming { get; set; }
         public long revision { get; set; }
         public bool hasMore { get; set; }

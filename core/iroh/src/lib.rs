@@ -131,7 +131,9 @@ async fn dispatch(v: Value) -> Result<Value, String> {
     let op = text(&v, "op")?;
     if op == "start" {
         let key: [u8;32] = hex::decode(text(&v, "key")?).map_err(err)?.try_into().map_err(err)?;
-        let relay = selected_relay()?;
+        let relay = match v["relayURL"].as_str().filter(|raw|!raw.is_empty()) {
+            Some(raw)=>configured_relay(raw)?,None=>selected_relay()?
+        };
         // All app versions know the same home relay, so peer IDs need no public lookup.
         // IP transports stay enabled: iroh can upgrade to a direct connection via discovery.
         let mut builder = Endpoint::builder(presets::Minimal).secret_key(SecretKey::from_bytes(&key))

@@ -41,6 +41,7 @@ type diskState struct {
 	Address   string    `json:"address"`
 	IrohSeed  [32]byte  `json:"irohSeed"`
 	RelayOnly bool      `json:"relayOnly"`
+	RelayURL  string    `json:"relayURL,omitempty"`
 }
 type Node struct {
 	mu             sync.Mutex
@@ -170,7 +171,11 @@ func (n *Node) peer(id string) (contact, bool) {
 	return contact{}, false
 }
 func (n *Node) statusLocked() map[string]any {
-	return map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "address": n.state.Address, "id": keyID(n.state.Public), "incoming": n.incoming, "revision": n.revision, "relay": n.relay, "relayOnly": n.state.RelayOnly, "transport": "iroh"}
+	server := n.state.RelayURL
+	if server == "" {
+		server = homeRelayURL
+	}
+	return map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "address": n.state.Address, "id": keyID(n.state.Public), "incoming": n.incoming, "revision": n.revision, "relay": n.relay, "relayURL": server, "relayOnly": n.state.RelayOnly, "transport": "iroh"}
 }
 
 // Status is bounded and does not serialize history or wait for network I/O.
@@ -445,7 +450,7 @@ func (n *Node) flushRoutes(ctx context.Context, client *http.Client) {
 		go func(c contact, queue []message) {
 			defer workers.Done()
 			defer func() { <-sem }()
-			for _, m := range queue {
+			for _, m := range queue[:min(len(queue), 16)] {
 				if ctx.Err() != nil {
 					return
 				}

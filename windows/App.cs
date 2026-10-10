@@ -194,7 +194,7 @@ namespace Blizko {
         }
         private void ApplyStatus(Snapshot next) {
             if (next == null) return;
-            snapshot.status = next.status; snapshot.enabled = next.enabled; snapshot.online = next.online; snapshot.relayOnly = next.relayOnly; snapshot.incoming = next.incoming;
+            snapshot.status = next.status; snapshot.enabled = next.enabled; snapshot.online = next.online; snapshot.relayOnly = next.relayOnly; snapshot.incoming = next.incoming; snapshot.relayURL = next.relayURL;
             status.Text = (snapshot.online ? "●  " : "○  ") + snapshot.status;
             receive.Content = snapshot.enabled ? "Выключить приём" : "Включить приём";
             if (tray != null && incoming >= 0 && snapshot.incoming > incoming && !Window.IsActive) {
@@ -305,9 +305,11 @@ namespace Blizko {
             var dialog = Dialog("Настройки Близко", 470); var content = new StackPanel { Margin = new Thickness(24) };
             content.Children.Add(new TextBlock { Text = "Соединение", FontSize = 21, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 16) });
             var relay = new CheckBox { Content = "Только через ретранслятор", IsChecked = snapshot.relayOnly, Margin = new Thickness(0, 0, 0, 12) }; content.Children.Add(relay);
+            content.Children.Add(Label("Адрес домашнего сервера (одинаковый на всех устройствах)"));
+            var server = new TextBox { Text = snapshot.relayURL ?? "", Margin = new Thickness(0, 0, 0, 12) }; content.Children.Add(server);
             content.Children.Add(Label("В обычном режиме приложение выбирает прямое соединение или зашифрованный ретранслятор автоматически. Для доставки оба устройства должны быть в интернете."));
             var apply = new Button { Content = "Сохранить", Background = Green, Foreground = Brushes.White, IsEnabled = engine != null && !fatal };
-            apply.Click += async delegate { apply.IsEnabled = false; try { ApplyStatus((await engine.Request("relay", value: relay.IsChecked == true)).snapshot); dialog.Close(); } catch (Exception e) { Notice(e.Message); apply.IsEnabled = true; } };
+            apply.Click += async delegate { apply.IsEnabled = false; try { await engine.Request("server",server.Text); ApplyStatus((await engine.Request("relay", value: relay.IsChecked == true)).snapshot); pageDirty = true; await Poll(); dialog.Close(); } catch (Exception e) { Notice(e.Message); apply.IsEnabled = true; } };
             content.Children.Add(apply);
             content.Children.Add(new TextBlock { Text = "Близко 0.2.2 · Windows", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 24, 0, 12) });
             content.Children.Add(Label("Регистрация не нужна. Ключи создаются автоматически. История хранится на этом компьютере. Закрытие окна оставляет приложение в трее; «Выйти» останавливает приём."));

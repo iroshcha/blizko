@@ -49,7 +49,7 @@ struct HomeView: View {
                                 NavigationLink { ConversationView(contact: contact) } label: {
                                     VStack(alignment: .leading, spacing: 7) {
                                         Text(contact.name).font(.headline).foregroundStyle(.primary)
-                                        Text(model.snapshot.previews[contact.id] ?? "Начать разговор")
+                                        Text(model.snapshot.messages.last(where: { $0.peer == contact.id })?.text ?? "Начать разговор")
                                             .lineLimit(1).font(.subheadline).foregroundStyle(.secondary)
                                     }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.white, in: RoundedRectangle(cornerRadius: 16))
                                 }.buttonStyle(.plain)
@@ -67,7 +67,7 @@ struct HomeView: View {
                 .sheet(isPresented: $networkSetup) { QRConnectionView() }
                 .alert("Близко", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("Понятно") { model.error = nil } } message: { Text(model.error ?? "") }
                 .alert("Как работает чат", isPresented: $info) { Button("Понятно", role: .cancel) {} } message: {
-                    Text("iroh встроен: аккаунт и VPN не нужны. История и очередь отправки находятся только на телефонах. Если прямое соединение невозможно, зашифрованные данные проходят через ваш домашний сервер. Он должен быть включён и подключён к интернету.\n\nУдаление приложения удаляет историю. Резервной копии нет. Это прототип без независимого аудита безопасности.")
+                    Text("iroh встроен: аккаунт и VPN не нужны. История и очередь отправки находятся только на телефонах. При невозможности прямой связи используются публичные ретрансляторы зашифрованных данных. Их бесплатный режим предназначен для экспериментов и личных проектов.\n\nУдаление приложения удаляет историю. Резервной копии нет. Это прототип без независимого аудита безопасности.")
                 }
                 .alert("Обновления на iPhone", isPresented: $updates) { Button("Понятно", role: .cancel) {} } message: {
                     Text("При бесплатной подписи новая версия устанавливается через SideStore или Sideloadly. Готовый IPA нужно скачать из артефактов успешной macOS-сборки на GitHub. Для сохранения переписки устанавливайте поверх текущей версии с тем же Apple Account и идентификатором приложения.")
@@ -136,19 +136,11 @@ struct ConversationView: View {
     @EnvironmentObject var model: ChatModel
     let contact: Contact
     @State private var draft = ""
-    @State private var clearing = false
     private var messages: [ChatMessage] { model.snapshot.messages.filter { $0.peer == contact.id } }
     var body: some View {
         VStack(spacing: 0) {
             Text(model.snapshot.status).font(.caption).foregroundStyle(.secondary).padding(8)
             Button("Проверить связь с собеседником") { model.checkContact(contact.id) }.font(.subheadline)
-            HStack {
-                Button("Раньше") { model.older() }.disabled(!model.snapshot.hasMore)
-                Spacer()
-                Button("Последние") { model.recent() }.disabled(model.before == 0)
-                Spacer()
-                Button("Очистить") { clearing = true }
-            }.font(.subheadline).padding(.horizontal)
             if let issue = model.snapshot.deliveryIssues?[contact.id] { Text(issue).font(.caption).foregroundStyle(.secondary).padding(.horizontal) }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -168,7 +160,7 @@ struct ConversationView: View {
                             }.id(message.id)
                         }
                     }.padding()
-                }.onChange(of: messages.last?.id) { _ in if model.before == 0, let id = messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
+                }.onChange(of: messages.count) { _ in if let id = messages.last?.id { proxy.scrollTo(id, anchor: .bottom) } }
             }
             HStack {
                 TextField("Сообщение…", text: $draft, axis: .vertical).lineLimit(1...4).padding(12).background(.white, in: RoundedRectangle(cornerRadius: 16))
@@ -176,10 +168,5 @@ struct ConversationView: View {
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding()
         }.background(paper).navigationTitle(contact.name).navigationBarTitleDisplayMode(.inline)
-            .onAppear { model.select(contact.id) }.onDisappear { model.select("") }
-            .alert("Очистить историю?", isPresented: $clearing) {
-                Button("Отмена", role: .cancel) {}
-                Button("Очистить", role: .destructive) { model.clear(contact.id) }
-            } message: { Text("Будут удалены тексты доставленных сообщений на этом устройстве. Ожидающие отправки сообщения сохранятся.") }
     }
 }
