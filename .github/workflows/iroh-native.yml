@@ -116,7 +116,7 @@ jobs:
           adb install app/build/outputs/apk/debug/app-debug.apk
           adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           adb shell pm grant ru.blizko.chat android.permission.POST_NOTIFICATIONS
-          adb shell am instrument -w ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-instrumentation.txt
+          adb shell am instrument -w -r ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-instrumentation.txt
           grep -q 'INSTRUMENTATION_CODE: -1' /tmp/blizko-instrumentation.txt
           adb root
           adb wait-for-device
@@ -135,7 +135,7 @@ jobs:
           sleep 3
           adb shell dumpsys activity services ru.blizko.chat > /tmp/blizko-service-restart.txt
           grep -q 'isForeground=true' /tmp/blizko-service-restart.txt
-          adb shell am instrument -w -e stopOnly true ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-service-stop.txt
+          adb shell am instrument -w -r -e stopOnly true ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-service-stop.txt
           grep -q 'INSTRUMENTATION_CODE: -1' /tmp/blizko-service-stop.txt
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Linux' && always()
