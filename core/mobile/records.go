@@ -122,10 +122,16 @@ func (v *vault) readMessages() ([]message, error) {
 
 func (n *Node) rebuildIndexes() {
 	n.messageIndexes = make(map[string]int, len(n.state.Messages))
+	n.historyIndexes = map[string][]int{}
+	n.previews = map[string]string{}
 	n.incoming = 0
 	n.nextOrder = 0
 	for i, m := range n.state.Messages {
 		n.messageIndexes[recordID(m)] = i
+		if !m.Archived {
+			n.historyIndexes[m.Peer] = append(n.historyIndexes[m.Peer], i)
+			n.previews[m.Peer] = m.Text
+		}
 		if m.Order > n.nextOrder {
 			n.nextOrder = m.Order
 		}
@@ -146,6 +152,10 @@ func (n *Node) storeMessage(m message, index int) error {
 	if index < 0 {
 		n.state.Messages = append(n.state.Messages, m)
 		n.messageIndexes[recordID(m)] = len(n.state.Messages) - 1
+		if !m.Archived {
+			n.historyIndexes[m.Peer] = append(n.historyIndexes[m.Peer], len(n.state.Messages)-1)
+			n.previews[m.Peer] = m.Text
+		}
 		if !m.Out {
 			n.incoming++
 		}
@@ -163,18 +173,33 @@ func (n *Node) storeMessage(m message, index int) error {
 // Pending outbound messages and device/contact keys are deliberately retained.
 func (n *Node) ClearHistory(peer string) error {
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	if _, ok := n.peer(peer); !ok {
+		n.mu.Unlock()
 		return errors.New("Контакт не найден")
 	}
+	indices := []int{}
 	for i, m := range n.state.Messages {
 		if m.Peer != peer || m.Archived || (m.Out && !m.Delivered) {
+			continue
+		}
+		indices = append(indices, i)
+	}
+	n.mu.Unlock()
+	// Permit delivery and status reads between atomic record writes.
+	defer func() { n.mu.Lock(); n.rebuildIndexes(); n.mu.Unlock() }()
+	for _, i := range indices {
+		n.mu.Lock()
+		m := n.state.Messages[i]
+		if m.Archived {
+			n.mu.Unlock()
 			continue
 		}
 		m.Archived = true
 		m.Text = ""
 		m.Packet = nil
-		if err := n.storeMessage(m, i); err != nil {
+		err := n.storeMessage(m, i)
+		n.mu.Unlock()
+		if err != nil {
 			return err
 		}
 	}

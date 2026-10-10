@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +63,8 @@ type Node struct {
 	nextOrder      int64
 	incoming       int
 	messageIndexes map[string]int
+	historyIndexes map[string][]int
+	previews       map[string]string
 	retry          map[string]retryState
 	flushMu        sync.Mutex
 }
@@ -203,8 +206,20 @@ func (n *Node) snapshot(peer string, before int64, limit int) string {
 	status := n.statusLocked()
 	messages := []message{}
 	hasMore := false
-	for i := len(n.state.Messages) - 1; i >= 0; i-- {
-		m := n.state.Messages[i]
+	indices := n.historyIndexes[peer]
+	rows := len(n.state.Messages)
+	if peer != "" {
+		rows = len(indices)
+		if before > 0 {
+			rows = sort.Search(len(indices), func(i int) bool { return n.state.Messages[indices[i]].Order >= before })
+		}
+	}
+	for i := rows - 1; i >= 0; i-- {
+		index := i
+		if peer != "" {
+			index = indices[i]
+		}
+		m := n.state.Messages[index]
 		if m.Archived || (peer != "" && m.Peer != peer) || (before > 0 && m.Order >= before) {
 			continue
 		}
@@ -224,16 +239,8 @@ func (n *Node) snapshot(peer string, before int64, limit int) string {
 		issues[id] = value
 	}
 	previews := map[string]string{}
-	for i := len(n.state.Messages) - 1; i >= 0; i-- {
-		m := n.state.Messages[i]
-		if !m.Archived {
-			if _, ok := previews[m.Peer]; !ok {
-				previews[m.Peer] = m.Text
-			}
-		}
-		if len(previews) == len(n.state.Contacts) {
-			break
-		}
+	for id, preview := range n.previews {
+		previews[id] = preview
 	}
 	status["messages"] = messages
 	status["hasMore"] = hasMore

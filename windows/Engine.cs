@@ -84,7 +84,7 @@ namespace Blizko {
                 string request = json.Serialize(new { id = id, op = op, first = first, second = second, value = value, before = before, limit = limit });
                 await input.WriteLineAsync(request);
                 Task<string> read = process.StandardOutput.ReadLineAsync();
-                if (await Task.WhenAny(read, Task.Delay(40000)) != read) {
+                if (await Task.WhenAny(read, Task.Delay(op == "clear" ? 600000 : 40000)) != read) {
                     if (!process.HasExited) process.Kill();
                     throw new IOException("Соединение не отвечает. Откройте приложение заново; история сохранена.");
                 }

@@ -5,6 +5,8 @@
 local.properties
 *.jks
 *.keystore
+*.p12
+store-password.txt
 .idea/
 app/libs/*.aar
 app/libs/*-sources.jar

@@ -147,7 +147,7 @@ public final class MainActivity extends Activity {
         if(count==0)bubbles.addView(text("Сообщения видны только вам и собеседнику. Добавьте QR-коды контактов на обоих телефонах.",15,MUTED));
         gap(root,8);
         LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.BOTTOM);compose=input("Сообщение…");compose.setText(draft);compose.setMaxLines(4);compose.setBackground(bg(Color.WHITE,16));line.addView(compose,new LinearLayout.LayoutParams(0,-2,1));
-        line.addView(button("↑",()->{String content=compose.getText().toString();String target=peer;work(()->{app.node.send(target,content);runOnUiThread(()->{draft="";if(compose!=null)compose.setText("");});});}));root.addView(line);
+        line.addView(button("↑",()->{String content=compose.getText().toString();String target=peer;work(()->{app.node.send(target,content);runOnUiThread(()->{if(target.equals(peer)&&compose!=null&&content.contentEquals(compose.getText())){draft="";compose.setText("");}});});}));root.addView(line);
     }
     private void shareCode(){work(()->{
         String code=app.node.myCode();
