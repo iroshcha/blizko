@@ -31,10 +31,29 @@ func newVault(dir string, key []byte) (*vault, error) {
 	if e != nil {
 		return nil, e
 	}
-	if e = os.MkdirAll(dir, 0700); e != nil {
+	if e = makeVaultDirectory(dir); e != nil {
 		return nil, e
 	}
 	return &vault{dir: dir, aead: a}, nil
+}
+func makeVaultDirectory(dir string) error {
+	info, err := os.Stat(dir)
+	if err == nil {
+		if !info.IsDir() {
+			return errors.New("storage path is not a directory")
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	if err = makeVaultDirectory(filepath.Dir(dir)); err != nil {
+		return err
+	}
+	if err = os.Mkdir(dir, 0700); err != nil && !os.IsExist(err) {
+		return err
+	}
+	return syncVaultDirectory(dir)
 }
 func (v *vault) filename(name string) string {
 	h := sha256.Sum256([]byte(name))
@@ -60,7 +79,10 @@ func (v *vault) write(name string, data []byte) error {
 		if os.IsNotExist(e) {
 			return nil
 		}
-		return e
+		if e != nil {
+			return e
+		}
+		return syncVaultDirectory(v.filename(name))
 	}
 	nonce := make([]byte, v.aead.NonceSize())
 	if _, e := io.ReadFull(rand.Reader, nonce); e != nil {

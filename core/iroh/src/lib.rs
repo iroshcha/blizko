@@ -2,11 +2,13 @@
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayUrl, SecretKey, endpoint::presets};
 use n0_watcher::Watcher;
 use serde_json::{Value, json};
-use std::{collections::HashMap, ffi::{CStr, CString, c_char}, sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}}, time::Duration};
+use std::{collections::{HashMap, HashSet}, ffi::{CStr, CString, c_char}, sync::{Arc, Mutex, RwLock, OnceLock, atomic::{AtomicU64, Ordering}}, time::Duration};
 use tokio::{runtime::Runtime, sync::{mpsc, oneshot, Semaphore}};
 
 #[cfg(all(test, windows))]
 mod windows_test;
+#[cfg(test)]
+mod local_test;
 
 const ALPN: &[u8] = b"blizko/chat/3";
 const HOME_RELAY: &str = "https://ample-raven-6363.ru.tuna.am/";
@@ -17,6 +19,23 @@ struct Node {
     relay: RelayUrl,
     incoming: tokio::sync::Mutex<mpsc::Receiver<Value>>,
     replies: Mutex<HashMap<u64, Reply>>,
+    allowed: RwLock<HashMap<String,Arc<Semaphore>>>,
+    connections: tokio::sync::Mutex<HashMap<String,Arc<tokio::sync::Mutex<Option<iroh::endpoint::Connection>>>>>,
+    requests: Mutex<Requests>,
+}
+#[derive(Default)]
+struct Requests { active:HashMap<u64,oneshot::Sender<()>>, cancelled:HashSet<u64> }
+struct IncompleteExchange { connection:iroh::endpoint::Connection, complete:bool }
+impl Drop for IncompleteExchange {
+    fn drop(&mut self) { if !self.complete { self.connection.close(0u32.into(),b"request cancelled"); } }
+}
+fn update_allowed(node:&Node, value:&Value)->Result<(),String>{
+    let list=value.as_array().ok_or("invalid_contacts")?;
+    if list.len()>100{return Err("too_many_contacts".into())}
+    let mut next=HashMap::new();let mut allowed=node.allowed.write().unwrap();
+    for item in list {let peer=item.as_str().ok_or("invalid_contacts")?;let _:EndpointId=peer.parse().map_err(err)?;
+        next.insert(peer.to_owned(),allowed.get(peer).cloned().unwrap_or_else(||Arc::new(Semaphore::new(2))));}
+    *allowed=next;Ok(())
 }
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 static NODES: OnceLock<Mutex<HashMap<u64, Arc<Node>>>> = OnceLock::new();
@@ -67,30 +86,43 @@ fn selected_relay() -> Result<RelayUrl, String> {
     configured_relay(HOME_RELAY)
 }
 
-async fn serve(node: Arc<Node>, tx: mpsc::Sender<Value>) {
-    let permits = Arc::new(Semaphore::new(8));
-    while let Some(incoming) = node.endpoint.accept().await {
-        let Ok(permit) = permits.clone().try_acquire_owned() else { incoming.refuse(); continue; };
-        let node = node.clone(); let tx = tx.clone();
+async fn serve(node:Arc<Node>,tx:mpsc::Sender<Value>) {
+    let handshakes=Arc::new(Semaphore::new(32));
+    let streams=Arc::new(Semaphore::new(16));
+    while let Some(incoming)=node.endpoint.accept().await {
+        let Ok(handshake)=handshakes.clone().try_acquire_owned() else{incoming.refuse();continue};
+        let node=node.clone();let tx=tx.clone();let streams=streams.clone();
         tokio::spawn(async move {
-            let _permit = permit;
-            let request_id = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-            let _ = tokio::time::timeout(Duration::from_secs(20), async {
-                let conn = incoming.await.map_err(err)?;
-                let (mut send, mut recv) = conn.accept_bi().await.map_err(err)?;
-                let data = recv.read_to_end(MAX_PACKET).await.map_err(err)?;
-                let data = String::from_utf8(data).map_err(err)?;
-                let (reply_tx, reply_rx) = oneshot::channel();
-                node.replies.lock().unwrap().insert(request_id, reply_tx);
-                tx.try_send(json!({"request":request_id,"peer":conn.remote_id().to_string(),"data":data})).map_err(err)?;
-                let response = reply_rx.await.map_err(err)?;
-                send.write_all(response.as_bytes()).await.map_err(err)?;
-                send.finish().map_err(err)?;
-                let _ = send.stopped().await;
-                conn.close(0u32.into(), b"done");
-                Ok::<_, String>(())
-            }).await;
-            node.replies.lock().unwrap().remove(&request_id);
+            let conn=match tokio::time::timeout(Duration::from_secs(2),incoming).await {Ok(Ok(c))=>c,_=>return};
+            let peer=conn.remote_id().to_string();
+            let permission=node.allowed.read().unwrap().get(&peer).cloned();
+            let Some(permission)=permission else{conn.close(0u32.into(),b"unknown contact");return};
+            let Ok(_contact_slot)=permission.try_acquire_owned() else{conn.close(0u32.into(),b"contact busy");return};
+            drop(handshake);
+            loop {
+                let (mut send,mut recv)=match tokio::time::timeout(Duration::from_secs(60),conn.accept_bi()).await{Ok(Ok(pair))=>pair,_=>break};
+                if !node.allowed.read().unwrap().contains_key(&peer){break}
+                let Ok(_stream)=streams.clone().try_acquire_owned() else{break};
+                let request_id=SEQUENCE.fetch_add(1,Ordering::Relaxed);
+                let request=async {
+                    let data=tokio::time::timeout(Duration::from_secs(5),recv.read_to_end(MAX_PACKET)).await.map_err(err)?.map_err(err)?;
+                    let data=String::from_utf8(data).map_err(err)?;
+                    let (reply_tx,reply_rx)=oneshot::channel();
+                    node.replies.lock().unwrap().insert(request_id,reply_tx);
+                    tx.try_send(json!({"request":request_id,"peer":peer,"data":data})).map_err(err)?;
+                    let response=reply_rx.await.map_err(err)?;
+                    send.write_all(response.as_bytes()).await.map_err(err)?;
+                    send.finish().map_err(err)?;
+                    Ok::<_,String>(())
+                };
+                let succeeded=tokio::select! {
+                    result=tokio::time::timeout(Duration::from_secs(20),request)=>matches!(result,Ok(Ok(()))),
+                    _=conn.closed()=>false
+                };
+                node.replies.lock().unwrap().remove(&request_id);
+                if !succeeded{break}
+            }
+            conn.close(0u32.into(),b"idle or closed");
         });
     }
 }
@@ -114,7 +146,8 @@ async fn dispatch(v: Value) -> Result<Value, String> {
         let endpoint = builder.bind().await.map_err(err)?;
         let address = endpoint.id().to_string();
         let (tx, rx) = mpsc::channel(8);
-        let node = Arc::new(Node { endpoint, relay, incoming: tokio::sync::Mutex::new(rx), replies: Mutex::new(HashMap::new()) });
+        let node = Arc::new(Node { endpoint, relay, incoming: tokio::sync::Mutex::new(rx), replies: Mutex::new(HashMap::new()),allowed:RwLock::new(HashMap::new()),connections:tokio::sync::Mutex::new(HashMap::new()),requests:Mutex::new(Requests::default()) });
+        if let Err(error)=update_allowed(&node,&v["peers"]){node.endpoint.close().await;return Err(error)};
         let handle = SEQUENCE.fetch_add(1, Ordering::Relaxed);
         nodes().lock().unwrap().insert(handle, node.clone());
         tokio::spawn(serve(node, tx));
@@ -126,7 +159,26 @@ async fn dispatch(v: Value) -> Result<Value, String> {
         "close" => {
             nodes().lock().unwrap().remove(&handle);
             node.replies.lock().unwrap().clear();
+            for (_,cancel) in node.requests.lock().unwrap().active.drain(){let _=cancel.send(());}
+            node.connections.lock().await.clear();
             node.endpoint.close().await;
+            Ok(json!({}))
+        }
+        "allow"=>{
+            update_allowed(&node,&v["peers"])?;
+            let peers:HashSet<String>=node.allowed.read().unwrap().keys().cloned().collect();
+            node.connections.lock().await.retain(|peer,_|peers.contains(peer));
+            Ok(json!({}))
+        }
+        "cancel"=>{
+            let id=v["request"].as_u64().ok_or("invalid_request")?;
+            let mut requests=node.requests.lock().unwrap();
+            if let Some(cancel)=requests.active.remove(&id){let _=cancel.send(());}else{
+                if requests.cancelled.len()>=1024 {
+                    if let Some(oldest)=requests.cancelled.iter().min().copied(){requests.cancelled.remove(&oldest);}
+                }
+                requests.cancelled.insert(id);
+            }
             Ok(json!({}))
         }
         "status" => {
@@ -148,23 +200,39 @@ async fn dispatch(v: Value) -> Result<Value, String> {
             Ok(json!({}))
         }
         "exchange" => {
-            let peer: EndpointId = text(&v, "peer")?.parse().map_err(err)?;
-            let data = text(&v, "data")?;
-            if data.len() > MAX_PACKET { return Err("too_large".into()); }
-            tokio::time::timeout(Duration::from_secs(15), async {
-                let address = EndpointAddr::new(peer).with_relay_url(node.relay.clone());
-                let conn = node.endpoint.connect(address, ALPN).await.map_err(connect_error)?;
-                let result = async {
-                    let (mut send, mut recv) = conn.open_bi().await.map_err(err)?;
-                    send.write_all(data.as_bytes()).await.map_err(err)?;
-                    send.finish().map_err(err)?;
-                    let response = recv.read_to_end(MAX_PACKET).await.map_err(err)?;
-                    let data = String::from_utf8(response).map_err(err)?;
-                    Ok(json!({"data":data}))
+            let peer:EndpointId=text(&v,"peer")?.parse().map_err(err)?;
+            let peer_text=peer.to_string();
+            if !node.allowed.read().unwrap().contains_key(&peer_text){return Err("unknown_contact".into())}
+            let data=text(&v,"data")?;if data.len()>MAX_PACKET{return Err("too_large".into())}
+            let id=v["request"].as_u64().unwrap_or_else(||SEQUENCE.fetch_add(1,Ordering::Relaxed));
+            let (cancel_tx,cancel_rx)=oneshot::channel();
+            {let mut requests=node.requests.lock().unwrap();if requests.cancelled.remove(&id){return Err("cancelled".into())}requests.active.insert(id,cancel_tx);}
+            let operation=async {
+                let slot={let mut cache=node.connections.lock().await;
+                    cache.entry(peer_text).or_insert_with(||Arc::new(tokio::sync::Mutex::new(None))).clone()};
+                let mut cached=slot.lock().await;
+                if cached.as_ref().is_none_or(|c|c.close_reason().is_some()){
+                    let address=EndpointAddr::new(peer).with_relay_url(node.relay.clone());
+                    *cached=Some(node.endpoint.connect(address,ALPN).await.map_err(connect_error)?);
+                }
+                let conn=cached.as_ref().unwrap().clone();
+                let mut guard=IncompleteExchange{connection:conn.clone(),complete:false};
+                let result=async {
+                    let (mut send,mut recv)=conn.open_bi().await.map_err(err)?;
+                    send.write_all(data.as_bytes()).await.map_err(err)?;send.finish().map_err(err)?;
+                    let response=recv.read_to_end(MAX_PACKET).await.map_err(err)?;
+                    let data=String::from_utf8(response).map_err(err)?;Ok(json!({"data":data}))
                 }.await;
-                conn.close(0u32.into(), b"done");
+                guard.complete=result.is_ok();
+                if result.is_err(){conn.close(0u32.into(),b"request failed");*cached=None;}
                 result
-            }).await.map_err(|_| "timeout".to_owned())?
+            };
+            let result=tokio::select!{
+                _=cancel_rx=>Err("cancelled".to_owned()),
+                answer=tokio::time::timeout(Duration::from_secs(15),operation)=>match answer {Ok(answer)=>answer,Err(_)=>Err("timeout".to_owned())}
+            };
+            node.requests.lock().unwrap().active.remove(&id);
+            result
         }
         _ => Err("invalid_operation".into())
     }

@@ -7,8 +7,8 @@ android {
         applicationId 'ru.blizko.chat'
         minSdk 26
         targetSdk 35
-        versionCode 7
-        versionName '0.2.1'
+        versionCode 8
+        versionName '0.2.2'
         testInstrumentationRunner 'ru.blizko.chat.QrAndUpdateTest'
     }
     compileOptions {
@@ -19,7 +19,7 @@ android {
     defaultConfig {
         buildConfigField 'String', 'UPDATE_MANIFEST_URL', groovy.json.JsonOutput.toJson(providers.gradleProperty('updateManifestUrl').getOrElse('https://github.com/iroshcha/blizko/releases/latest/download/android-update.json'))
     }
-    buildTypes { release { minifyEnabled false } }
+    buildTypes { release { minifyEnabled false; debuggable false } }
 }
 
 dependencies {

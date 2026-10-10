@@ -22,6 +22,8 @@ type command struct {
 	First  string `json:"first"`
 	Second string `json:"second"`
 	Value  bool   `json:"value"`
+	Before int64  `json:"before"`
+	Limit  int    `json:"limit"`
 }
 
 type response struct {
@@ -44,7 +46,9 @@ func run(input io.Reader, output io.Writer, node *mobile.Node) error {
 			result.ID = request.ID
 			var err error
 			switch request.Op {
-			case "snapshot":
+			case "snapshot", "page", "status":
+			case "clear":
+				err = node.ClearHistory(request.First)
 			case "start":
 				err = node.Start()
 			case "stop":
@@ -70,7 +74,15 @@ func run(input io.Reader, output io.Writer, node *mobile.Node) error {
 			if err != nil {
 				result.Error = err.Error()
 			}
-			result.Snapshot = json.RawMessage(node.Snapshot())
+			if request.Op == "status" {
+				result.Snapshot = json.RawMessage(node.Status())
+			} else {
+				peer := ""
+				if request.Op == "page" || request.Op == "send" || request.Op == "clear" {
+					peer = request.First
+				}
+				result.Snapshot = json.RawMessage(node.SnapshotPage(peer, request.Before, request.Limit))
+			}
 		}
 		if err := writer.Encode(result); err != nil {
 			return err

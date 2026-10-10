@@ -5,5 +5,8 @@ package mobile
 import "os"
 
 func replaceVaultFile(source, destination string) error {
-	return os.Rename(source, destination)
+	if err := os.Rename(source, destination); err != nil {
+		return err
+	}
+	return syncVaultDirectory(destination)
 }

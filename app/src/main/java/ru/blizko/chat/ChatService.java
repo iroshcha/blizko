@@ -10,9 +10,12 @@ public final class ChatService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int incoming = -1;
     private ChatApp app;
+    private boolean destroyed=false,polling=false;
+    private static final String RECEIVE="receiveEnabled";
     private final Runnable watch = new Runnable() { public void run() {
-        if(app.node!=null)try {
-            JSONObject s=new JSONObject(app.node.snapshot()); int count=s.optInt("incoming");
+        if(!polling&&app.node!=null){polling=true;app.io.execute(()->{
+            String raw=app.node.status();handler.post(()->{polling=false;if(destroyed)return;try {
+            JSONObject s=new JSONObject(raw); int count=s.optInt("incoming");
             if(incoming>=0&&count>incoming&&!app.activeScreen) {
                 getSystemService(NotificationManager.class).notify(2,new Notification.Builder(ChatService.this,"messages")
                     .setSmallIcon(ru.blizko.chat.R.drawable.ic_chat).setContentTitle("Близко")
@@ -20,7 +23,7 @@ public final class ChatService extends Service {
             }
             incoming=count;
             getSystemService(NotificationManager.class).notify(1,notification(s.optString("status")));
-        }catch(Exception ignored){}
+        }catch(Exception ignored){} });});}
         handler.postDelayed(this,5000);
     }};
     private PendingIntent open(){return PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);}
@@ -35,13 +38,16 @@ public final class ChatService extends Service {
         nm.createNotificationChannel(new NotificationChannel("messages","Сообщения",NotificationManager.IMPORTANCE_DEFAULT));
     }
     @Override public int onStartCommand(Intent intent,int flags,int id){
-        if(intent!=null&&"STOP".equals(intent.getAction())){stopSelf();return START_NOT_STICKY;}
+        android.content.SharedPreferences preferences=getSharedPreferences("connection",MODE_PRIVATE);
+        if(intent!=null&&"STOP".equals(intent.getAction())){preferences.edit().putBoolean(RECEIVE,false).commit();stopSelf();return START_NOT_STICKY;}
+        if(intent==null&&!preferences.getBoolean(RECEIVE,false)){stopSelf();return START_NOT_STICKY;}
+        if(intent!=null)preferences.edit().putBoolean(RECEIVE,true).commit();
         if(Build.VERSION.SDK_INT>=34)startForeground(1,notification("Подключение…"),ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else startForeground(1,notification("Подключение…"));
         app.io.execute(()->{try{if(app.node==null)throw new Exception();app.refreshInterfaces();app.node.start();}
             catch(Exception e){app.error="Не удалось включить приём. Попробуйте подключиться заново.";stopSelf();}});
-        handler.removeCallbacks(watch);handler.post(watch);return START_NOT_STICKY;
+        handler.removeCallbacks(watch);handler.post(watch);return START_STICKY;
     }
-    @Override public void onDestroy(){handler.removeCallbacks(watch);app.io.execute(()->{if(app.node!=null)app.node.stop();});super.onDestroy();}
+    @Override public void onDestroy(){destroyed=true;handler.removeCallbacks(watch);app.io.execute(()->{if(app.node!=null)app.node.stop();});super.onDestroy();}
     @Override public IBinder onBind(Intent intent){return null;}
 }

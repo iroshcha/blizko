@@ -13,7 +13,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -70,6 +70,7 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: core
         run: |
+          cargo test --manifest-path iroh/Cargo.toml --release --locked --lib
           go test -race -tags=iroh ./mobile
           BLIZKO_NETWORK_SMOKE=1 go test -tags=iroh -run TestIrohRealRelayDeliveryAndRestart -v ./mobile
       - name: Collect Rust dependency licenses
@@ -86,7 +87,42 @@ jobs:
           mkdir -p ../app/libs
           gomobile bind -target=android/arm64,android/amd64 -tags=iroh -androidapi 26 -ldflags='-s -w' -o ../app/libs/mobile.aar ./mobile
           cd ..
-          gradle --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
+          gradle --no-daemon :app:assembleRelease :app:assembleDebug :app:assembleDebugAndroidTest :app:lintRelease :app:lintDebug
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging app/build/outputs/apk/release/app-release-unsigned.apk > /tmp/blizko-release-badging.txt
+          if grep -q '^application-debuggable' /tmp/blizko-release-badging.txt; then echo 'Release APK enables debugging'; exit 1; fi
+      - name: Run Android UI, QR, APK and encrypted delivery checks
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'emulator' 'system-images;android-35;google_apis;x86_64'
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n blizko-ci -k 'system-images;android-35;google_apis;x86_64' --force
+          sudo chmod a+rw /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" -avd blizko-ci -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > /tmp/blizko-emulator.log 2>&1 &
+          emulator_pid=$!
+          trap 'kill "$emulator_pid" || true' EXIT
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          adb wait-for-device
+          for attempt in $(seq 1 120); do
+            if [[ "$(adb shell getprop sys.boot_completed | tr -d '\r')" == '1' ]]; then break; fi
+            sleep 2
+          done
+          [[ "$(adb shell getprop sys.boot_completed | tr -d '\r')" == '1' ]]
+          adb shell input keyevent 82
+          adb install app/build/outputs/apk/debug/app-debug.apk
+          adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          adb shell pm grant ru.blizko.chat android.permission.POST_NOTIFICATIONS
+          adb shell am instrument -w ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-instrumentation.txt
+          grep -q 'INSTRUMENTATION_CODE: -1' /tmp/blizko-instrumentation.txt
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux' && always()
+        with:
+          name: Android-check-reports
+          path: |
+            /tmp/blizko-instrumentation.txt
+            /tmp/blizko-emulator.log
+            /tmp/blizko-release-badging.txt
+            app/build/reports/lint-results-*.html
       - name: Build iPhone
         if: runner.os == 'macOS'
         run: |
@@ -104,6 +140,7 @@ jobs:
           path: |
             app/libs/mobile.aar
             app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
             app/build/outputs/apk/androidTest/debug/*.apk
             app/src/main/assets/IROH_NOTICES.txt
           retention-days: 7

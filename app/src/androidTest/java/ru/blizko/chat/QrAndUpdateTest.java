@@ -20,7 +20,7 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
     private void check(boolean value,String reason){if(!value)throw new AssertionError(reason);}
     @Override public void onStart(){
         Bundle result=new Bundle();
-        try{testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testApk();IrohDeliveryCheck.run(getTargetContext());result.putString("stream","OK: repeated startup, QR, APK validation, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);}
+        try{testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testApk();IrohDeliveryCheck.run(getTargetContext());result.putString("stream","OK: repeated startup, paged history and focused draft, QR, APK validation, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);}
         catch(Throwable failure){result.putString("stream","FAIL: "+failure.getClass().getSimpleName()+": "+failure.getMessage());finish(Activity.RESULT_CANCELED,result);}
     }
     private String contact()throws Exception{
@@ -73,6 +73,29 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
     private int countInputs(View view){
         int count=view instanceof EditText?1:0;
         if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++)count+=countInputs(group.getChildAt(i));}return count;
+    }
+    private View findText(View view,String value){
+        if(view instanceof TextView&&value.contentEquals(((TextView)view).getText()))return view;
+        if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++){View found=findText(group.getChildAt(i),value);if(found!=null)return found;}}return null;
+    }
+    private void testPagedHistoryAndDraft()throws Exception{
+        MainActivity activity=(MainActivity)startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        ChatApp app=(ChatApp)activity.getApplication();
+        app.io.submit(()->{app.node.addContact("History regression",contact());return null;}).get(60,java.util.concurrent.TimeUnit.SECONDS);
+        String id=new JSONObject(app.node.snapshot()).getJSONArray("contacts").getJSONObject(0).getString("id");
+        app.io.submit(()->{for(int i=0;i<65;i++)app.node.send(id,"history "+i);return null;}).get(60,java.util.concurrent.TimeUnit.SECONDS);
+        Thread.sleep(1800);waitForIdleSync();
+        runOnMainSync(()->{View row=findText(activity.getWindow().getDecorView(),"History regression");check(row!=null,"History contact missing");((View)row.getParent()).performClick();});
+        Thread.sleep(1500);waitForIdleSync();
+        JSONObject latest=new JSONObject(app.node.snapshotPage(id,0,50));
+        check(latest.getJSONArray("messages").length()==50&&latest.getBoolean("hasMore"),"History page is unbounded");
+        runOnMainSync(()->{EditText editor=findInput(activity.getWindow().getDecorView());check(editor!=null,"Composer missing");editor.setText("draft retained");editor.requestFocus();editor.setSelection(5);});
+        app.io.submit(()->{app.node.send(id,"history refresh");return null;}).get(60,java.util.concurrent.TimeUnit.SECONDS);
+        Thread.sleep(1800);waitForIdleSync();
+        runOnMainSync(()->{EditText editor=findInput(activity.getWindow().getDecorView());check("draft retained".contentEquals(editor.getText())&&editor.hasFocus()&&editor.getSelectionStart()==5,"Refresh lost focused draft");
+            View older=findText(activity.getWindow().getDecorView(),"Раньше");check(older!=null&&older.isEnabled(),"Older history unavailable");older.performClick();});
+        Thread.sleep(1500);waitForIdleSync();
+        runOnMainSync(()->{check(findText(activity.getWindow().getDecorView(),"history 0")!=null,"Older page did not render");activity.finish();});
     }
     private EditText findInput(View view){
         if(view instanceof EditText)return (EditText)view;

@@ -77,6 +77,7 @@ func TestHTTPUnknownContactRecoversAfterQRImport(t *testing.T) {
 	if err := b.AddContact("Отправитель", ac); err != nil {
 		t.Fatal(err)
 	}
+	a.retry[b.self().ID] = retryState{} // Simulate the next scheduled retry.
 	a.flush(context.Background(), client)
 	if !a.state.Messages[0].Delivered || len(b.state.Messages) != 1 || a.deliveryIssues[b.self().ID] != "" {
 		t.Fatal("retry after QR import failed or diagnostic was not cleared")
@@ -110,6 +111,7 @@ func TestHTTPCorruptReceiptRetriesWithoutDuplicate(t *testing.T) {
 		t.Fatal("unverified receipt accepted or failure hidden")
 	}
 	corrupt.Store(false)
+	a.retry[b.self().ID] = retryState{} // Simulate the next scheduled retry.
 	a.flush(context.Background(), client)
 	if !a.state.Messages[0].Delivered || len(b.state.Messages) != 1 {
 		t.Fatal("valid retry failed or duplicated message")

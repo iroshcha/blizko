@@ -48,6 +48,8 @@ namespace Blizko {
         private readonly DispatcherTimer timer = new DispatcherTimer();
         private Snapshot snapshot = new Snapshot();
         private string peer = "", lastConversation = "", lastContacts = "";
+        private long before, pageRevision = -1;
+        private bool pageDirty = true;
         private readonly Dictionary<string, string> drafts = new Dictionary<string, string>();
         private bool polling, busy, exiting, fatal, selecting;
         private int incoming = -1;
@@ -73,11 +75,18 @@ namespace Blizko {
             status = Find<TextBlock>("Status"); title = Find<TextBlock>("ChatTitle"); subtitle = Find<TextBlock>("ChatSubtitle");
             issue = Find<TextBlock>("Issue"); issueBox = Find<Border>("IssueBox");
             messages = Find<StackPanel>("Messages"); scroll = Find<ScrollViewer>("MessageScroll"); welcome = Find<FrameworkElement>("Welcome");
-            receive.Click += async delegate { await Action(async () => { Reply reply = await engine.Request(snapshot.enabled ? "stop" : "start"); Apply(reply.snapshot); }); };
+            receive.Click += async delegate { await Action(async () => { Reply reply = await engine.Request(snapshot.enabled ? "stop" : "start"); ApplyStatus(reply.snapshot); }); };
             send.Click += async delegate { await Send(); };
             compose.PreviewKeyDown += async (sender, e) => { if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0) { e.Handled = true; await Send(); } };
             compose.TextChanged += delegate { send.IsEnabled = !busy && !fatal && peer != "" && compose.Text.Trim().Length > 0; };
             check.Click += async delegate { string target = peer; await Action(async () => Notice((await engine.Request("check", target)).code)); };
+            Find<Button>("Older").Click += async delegate { var rows = snapshot.messages.Where(m => m.peer == peer).ToList(); if (rows.Count > 0) { before = rows[0].order; pageDirty = true; await Poll(); } };
+            Find<Button>("Recent").Click += async delegate { before = 0; pageDirty = true; await Poll(); };
+            Find<Button>("ClearHistory").Click += async delegate {
+                if (MessageBox.Show(Window, "Удалить тексты доставленных сообщений на этом компьютере? Ожидающие отправки сообщения сохранятся.", "Очистить историю", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes) {
+                    string target = peer; await Action(async () => { await engine.Request("clear", target); before = 0; });
+                }
+            };
             Find<Button>("MyQR").Click += async delegate { await Action(async () => ShowQR((await engine.Request("code")).code)); };
             Find<Button>("AddContact").Click += delegate { ShowAddContact(); };
             Find<Button>("Settings").Click += delegate { ShowSettings(); };
@@ -87,8 +96,9 @@ namespace Blizko {
                 if (peer != "") drafts[peer] = compose.Text;
                 Contact contact = contacts.SelectedItem as Contact;
                 peer = contact == null ? "" : contact.id;
+                before = 0; pageDirty = true;
                 compose.Text = peer != "" && drafts.ContainsKey(peer) ? drafts[peer] : "";
-                lastConversation = ""; RenderConversation();
+                lastConversation = ""; RenderConversation(); if (!preview) { var refresh = Poll(); }
             };
             if (!preview) {
                 Window.Loaded += async delegate { await Initialize(); };
@@ -108,15 +118,15 @@ namespace Blizko {
                 tray = new Forms.NotifyIcon { Text = "Близко", Icon = System.Drawing.Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location), Visible = true };
                 var menu = new Forms.ContextMenuStrip();
                 menu.Items.Add("Открыть Близко", null, delegate { Restore(); });
-                menu.Items.Add("Включить / выключить приём", null, async delegate { await Action(async () => Apply((await engine.Request(snapshot.enabled ? "stop" : "start")).snapshot)); });
+                menu.Items.Add("Включить / выключить приём", null, async delegate { await Action(async () => ApplyStatus((await engine.Request(snapshot.enabled ? "stop" : "start")).snapshot)); });
                 menu.Items.Add("Выйти", null, async delegate { await Exit(); });
                 tray.ContextMenuStrip = menu;
                 tray.DoubleClick += delegate { Restore(); };
                 timer.Start();
-                await Action(async () => Apply((await engine.Request("start")).snapshot));
+                await Action(async () => ApplyStatus((await engine.Request("start")).snapshot));
             } catch (Exception e) { fatal = true; status.Text = "Хранилище не открыто"; UpdateButtons(); Notice(e.Message); }
         }
-        private void Restore() { Window.Show(); Window.WindowState = WindowState.Normal; Window.Activate(); }
+        private void Restore() { Window.Show(); Window.WindowState = WindowState.Normal; Window.Activate(); pageDirty = true; var refresh = Poll(); }
         private async void Closing(object sender, CancelEventArgs e) {
             if (exiting) return;
             e.Cancel = true;
@@ -134,13 +144,20 @@ namespace Blizko {
         private void NetworkChanged(object sender, EventArgs e) {
             if (exiting || fatal || engine == null) return;
             Window.Dispatcher.BeginInvoke(new System.Action(async () => {
-                try { Apply((await engine.Request("network")).snapshot); } catch (Exception) { }
+                try { ApplyStatus((await engine.Request("network")).snapshot); } catch (Exception) { }
             }));
         }
         private async Task Poll() {
             if (polling || exiting || fatal || engine == null) return;
             polling = true;
-            try { Apply((await engine.Request("snapshot")).snapshot); }
+            try {
+                Snapshot next = (await engine.Request("status")).snapshot; ApplyStatus(next);
+                if (Window.IsVisible && (pageDirty || next.revision != pageRevision)) {
+                    string target = peer; long cursor = before;
+                    Reply page = await engine.Request("page", target, before: cursor);
+                    if (peer == target && before == cursor) { pageDirty = false; pageRevision = page.snapshot.revision; Apply(page.snapshot); }
+                }
+            }
             catch (Exception) { fatal = true; timer.Stop(); status.Text = "Приём остановлен · откройте приложение заново"; UpdateButtons(); }
             finally { polling = false; }
         }
@@ -148,7 +165,8 @@ namespace Blizko {
             if (busy || exiting || fatal || engine == null) return;
             busy = true; UpdateButtons();
             try { await action(); } catch (Exception e) { Notice(e.Message); }
-            finally { busy = false; UpdateButtons(); }
+            finally { busy = false; pageDirty = true; UpdateButtons(); }
+            await Poll();
         }
         private async Task Send() {
             if (peer == "" || compose.Text.Trim() == "" || DateTime.UtcNow - lastSend < TimeSpan.FromMilliseconds(200)) return;
@@ -157,7 +175,7 @@ namespace Blizko {
                 Reply reply = await engine.Request("send", target, text);
                 drafts[target] = "";
                 if (peer == target && compose.Text == text) compose.Clear();
-                lastSend = DateTime.UtcNow; Apply(reply.snapshot);
+                lastSend = DateTime.UtcNow; ApplyStatus(reply.snapshot);
             });
         }
         private void UpdateButtons() {
@@ -171,19 +189,24 @@ namespace Blizko {
         }
         internal void Apply(Snapshot next) {
             if (next == null) return;
-            snapshot = next;
+            ApplyStatus(next); snapshot = next;
+            RenderContacts(false); RenderConversation(); UpdateButtons();
+        }
+        private void ApplyStatus(Snapshot next) {
+            if (next == null) return;
+            snapshot.status = next.status; snapshot.enabled = next.enabled; snapshot.online = next.online; snapshot.relayOnly = next.relayOnly; snapshot.incoming = next.incoming;
             status.Text = (snapshot.online ? "●  " : "○  ") + snapshot.status;
             receive.Content = snapshot.enabled ? "Выключить приём" : "Включить приём";
             if (tray != null && incoming >= 0 && snapshot.incoming > incoming && !Window.IsActive) {
                 tray.ShowBalloonTip(4000, "Близко · новое сообщение", "Откройте Близко, чтобы прочитать сообщение.", Forms.ToolTipIcon.Info);
             }
             incoming = snapshot.incoming;
-            RenderContacts(false); RenderConversation(); UpdateButtons();
+            UpdateButtons();
         }
         private void RenderContacts(bool force) {
             foreach (Contact contact in snapshot.contacts) {
-                ChatMessage latest = snapshot.messages.LastOrDefault(m => m.peer == contact.id);
-                contact.Preview = latest == null ? "Начать разговор" : latest.text.Replace("\n", " ");
+                string latest;
+                contact.Preview = snapshot.previews != null && snapshot.previews.TryGetValue(contact.id, out latest) ? latest.Replace("\n", " ") : "Начать разговор";
             }
             string key = search.Text + "\n" + String.Join("\n", snapshot.contacts.Select(c => c.id + "\0" + c.name + "\0" + c.Preview));
             if (!force && key == lastContacts) return; lastContacts = key;
@@ -200,6 +223,10 @@ namespace Blizko {
             subtitle.Text = contact == null ? "Без регистрации. По вашему QR." : "Личная переписка · история на устройствах";
             welcome.Visibility = contact == null ? Visibility.Visible : Visibility.Collapsed;
             scroll.Visibility = contact == null ? Visibility.Collapsed : Visibility.Visible;
+            Find<FrameworkElement>("HistoryControls").Visibility = contact == null ? Visibility.Collapsed : Visibility.Visible;
+            Find<Button>("Older").IsEnabled = !busy && contact != null && snapshot.hasMore;
+            Find<Button>("Recent").IsEnabled = !busy && contact != null && before > 0;
+            Find<Button>("ClearHistory").IsEnabled = !busy && contact != null;
             string problem;
             bool hasIssue = snapshot.deliveryIssues != null && snapshot.deliveryIssues.TryGetValue(peer, out problem);
             issue.Text = hasIssue ? snapshot.deliveryIssues[peer] : "";
@@ -208,6 +235,7 @@ namespace Blizko {
             var conversation = snapshot.messages.Where(m => m.peer == peer).ToList();
             string key = peer + "\n" + String.Join("\n", conversation.Select(m => m.id + ":" + m.delivered));
             if (key == lastConversation) return; lastConversation = key;
+            double offset = scroll.VerticalOffset;
             bool atEnd = scroll.ExtentHeight - scroll.VerticalOffset - scroll.ViewportHeight < 40;
             messages.Children.Clear();
             if (contact != null && conversation.Count == 0) messages.Children.Add(new TextBlock { Text = "Ваш разговор начинается здесь.", Foreground = Muted, Margin = new Thickness(0, 24, 0, 0) });
@@ -222,7 +250,8 @@ namespace Blizko {
                     HorizontalAlignment = message.@out ? HorizontalAlignment.Right : HorizontalAlignment.Left,
                     MaxWidth = Math.Max(260, Window.ActualWidth > 0 ? (Window.ActualWidth - 380) * 0.85 : 480), Margin = new Thickness(0, 0, 0, 10) });
             }
-            if (atEnd || conversation.Count < 2) scroll.Dispatcher.BeginInvoke(new System.Action(scroll.ScrollToEnd), DispatcherPriority.Loaded);
+            if (before == 0 && (atEnd || conversation.Count < 2)) scroll.Dispatcher.BeginInvoke(new System.Action(scroll.ScrollToEnd), DispatcherPriority.Loaded);
+            else scroll.Dispatcher.BeginInvoke(new System.Action(() => scroll.ScrollToVerticalOffset(offset)), DispatcherPriority.Loaded);
         }
         private Window Dialog(string title, double width) {
             return new Window { Title = title, Owner = Window, Width = width, SizeToContent = SizeToContent.Height, ResizeMode = ResizeMode.NoResize,
@@ -266,7 +295,7 @@ namespace Blizko {
             add.Click += async delegate {
                 if (String.IsNullOrWhiteSpace(name.Text)) { hint.Text = "Введите имя собеседника."; return; }
                 add.IsEnabled = false;
-                try { string value = Qr.Require(code.Text); Reply reply = await engine.Request("add", name.Text, value); Apply(reply.snapshot); dialog.Close(); }
+                try { string value = Qr.Require(code.Text); Reply reply = await engine.Request("add", name.Text, value); ApplyStatus(reply.snapshot); pageDirty = true; await Poll(); dialog.Close(); }
                 catch (Exception e) { hint.Text = e.Message; }
                 finally { add.IsEnabled = true; }
             };
@@ -278,9 +307,9 @@ namespace Blizko {
             var relay = new CheckBox { Content = "Только через ретранслятор", IsChecked = snapshot.relayOnly, Margin = new Thickness(0, 0, 0, 12) }; content.Children.Add(relay);
             content.Children.Add(Label("В обычном режиме приложение выбирает прямое соединение или зашифрованный ретранслятор автоматически. Для доставки оба устройства должны быть в интернете."));
             var apply = new Button { Content = "Сохранить", Background = Green, Foreground = Brushes.White, IsEnabled = engine != null && !fatal };
-            apply.Click += async delegate { apply.IsEnabled = false; try { Apply((await engine.Request("relay", value: relay.IsChecked == true)).snapshot); dialog.Close(); } catch (Exception e) { Notice(e.Message); apply.IsEnabled = true; } };
+            apply.Click += async delegate { apply.IsEnabled = false; try { ApplyStatus((await engine.Request("relay", value: relay.IsChecked == true)).snapshot); dialog.Close(); } catch (Exception e) { Notice(e.Message); apply.IsEnabled = true; } };
             content.Children.Add(apply);
-            content.Children.Add(new TextBlock { Text = "Близко 0.2.1 · Windows", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 24, 0, 12) });
+            content.Children.Add(new TextBlock { Text = "Близко 0.2.2 · Windows", FontSize = 18, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 24, 0, 12) });
             content.Children.Add(Label("Регистрация не нужна. Ключи создаются автоматически. История хранится на этом компьютере. Закрытие окна оставляет приложение в трее; «Выйти» останавливает приём."));
             content.Children.Add(Label("Windows — отдельный контакт; синхронизации с вашей историей на телефоне пока нет. На iPhone для доставки нужно открыть приложение."));
             var release = new Button { Content = "Открыть страницу релизов", Background = Brushes.Transparent };

@@ -24,7 +24,7 @@ func TestTailscaleMigrationPreservesHistoryKeysAndOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if migrated.state.Version != 3 || migrated.state.Secret != legacy.Secret || migrated.state.Public != legacy.Public || len(migrated.state.Messages) != 1 || migrated.state.Messages[0].Packet == nil {
+	if migrated.state.Version != 4 || migrated.state.Secret != legacy.Secret || migrated.state.Public != legacy.Public || len(migrated.state.Messages) != 1 || migrated.state.Messages[0].Packet == nil {
 		t.Fatal("migration lost state")
 	}
 	if migrated.state.Contacts[0].ID != b.self().ID || migrated.state.Contacts[0].Address != "" {

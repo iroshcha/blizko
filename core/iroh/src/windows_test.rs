@@ -4,10 +4,12 @@ use super::*;
 fn windows_relay_round_trip() {
     if std::env::var("BLIZKO_NETWORK_SMOKE").as_deref() != Ok("1") { return; }
     runtime().block_on(async {
-        let a = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":true})).await.unwrap();
-        let b = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":true})).await.unwrap();
+        let a = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":true,"peers":[]})).await.unwrap();
+        let b = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":true,"peers":[]})).await.unwrap();
         let ah = a["handle"].as_u64().unwrap();
         let bh = b["handle"].as_u64().unwrap();
+        dispatch(json!({"op":"allow","handle":ah,"peers":[b["address"]]})).await.unwrap();
+        dispatch(json!({"op":"allow","handle":bh,"peers":[a["address"]]})).await.unwrap();
         tokio::time::sleep(Duration::from_secs(5)).await;
         let expected = selected_relay().unwrap().to_string();
         for handle in [ah, bh] {
@@ -39,10 +41,12 @@ fn windows_relay_round_trip() {
 fn windows_direct_connection_upgrades_from_home_relay() {
     if std::env::var("BLIZKO_NETWORK_SMOKE").as_deref() != Ok("1") { return; }
     runtime().block_on(async {
-        let a = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":false})).await.unwrap();
-        let b = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":false})).await.unwrap();
+        let a = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":false,"peers":[]})).await.unwrap();
+        let b = dispatch(json!({"op":"start","key":hex::encode(SecretKey::generate().to_bytes()),"relayOnly":false,"peers":[]})).await.unwrap();
         let ah = a["handle"].as_u64().unwrap();
         let bh = b["handle"].as_u64().unwrap();
+        dispatch(json!({"op":"allow","handle":ah,"peers":[b["address"]]})).await.unwrap();
+        dispatch(json!({"op":"allow","handle":bh,"peers":[a["address"]]})).await.unwrap();
         let an = nodes().lock().unwrap().get(&ah).unwrap().clone();
         let bn = nodes().lock().unwrap().get(&bh).unwrap().clone();
         let address = EndpointAddr::new(bn.endpoint.id()).with_relay_url(an.relay.clone());

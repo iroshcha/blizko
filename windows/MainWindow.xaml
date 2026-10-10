@@ -96,7 +96,7 @@
         </Grid>
         <DockPanel Grid.Row="5" Margin="0,18,0,0">
           <Button x:Name="Settings" Content="Настройки" Padding="10,8" Background="Transparent"/>
-          <TextBlock Text="Windows · 0.2.1" Foreground="#829087" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+          <TextBlock Text="Windows · 0.2.2" Foreground="#829087" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/>
         </DockPanel>
       </Grid>
     </Border>
@@ -113,10 +113,16 @@
         <TextBlock x:Name="Issue" Foreground="#765A26" TextWrapping="Wrap"/>
       </Border>
       <Grid Grid.Row="2">
-        <ScrollViewer x:Name="MessageScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <StackPanel x:Name="HistoryControls" Orientation="Horizontal" Margin="28,10,28,0" Visibility="Collapsed">
+          <Button x:Name="Older" Content="Раньше" Margin="0,0,8,0"/>
+          <Button x:Name="Recent" Content="Последние" Margin="0,0,8,0"/>
+          <Button x:Name="ClearHistory" Content="Очистить историю"/>
+        </StackPanel>
+        <ScrollViewer Grid.Row="1" x:Name="MessageScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
           <StackPanel x:Name="Messages" Margin="28,18,28,18"/>
         </ScrollViewer>
-        <StackPanel x:Name="Welcome" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="380" Margin="28">
+        <StackPanel Grid.Row="1" x:Name="Welcome" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="380" Margin="28">
           <Grid Width="132" Height="98" Margin="0,0,0,24">
             <Border Width="86" Height="60" Background="#E0EAE0" CornerRadius="22" HorizontalAlignment="Left" VerticalAlignment="Top"/>
             <Border Width="90" Height="60" Background="#236C58" CornerRadius="22" HorizontalAlignment="Right" VerticalAlignment="Bottom">

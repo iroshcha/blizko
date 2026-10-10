@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -57,8 +58,26 @@ type wireResponse struct {
 	Data   string `json:"data,omitempty"`
 }
 
+var exchangeSequence atomic.Uint64
+
 func (l *irohLink) exchange(peer, data string) (wireResponse, error) {
-	result, err := l.call("exchange", map[string]any{"peer": peer, "data": data})
+	return l.exchangeContext(context.Background(), peer, data)
+}
+func (l *irohLink) exchangeContext(ctx context.Context, peer, data string) (wireResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return wireResponse{}, err
+	}
+	id := exchangeSequence.Add(1)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			_, _ = l.call("cancel", map[string]any{"request": id})
+		}
+	}()
+	defer close(done)
+	result, err := l.call("exchange", map[string]any{"peer": peer, "data": data, "request": id})
 	if err != nil {
 		return wireResponse{}, err
 	}
@@ -77,7 +96,7 @@ func (l *irohLink) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil || len(data) > 20000 {
 		return nil, errors.New("invalid_request")
 	}
-	result, err := l.exchange(req.URL.Hostname(), string(data))
+	result, err := l.exchangeContext(req.Context(), req.URL.Hostname(), string(data))
 	if err != nil {
 		return nil, err
 	}
@@ -97,8 +116,9 @@ func (n *Node) startLocked() error {
 		return nil
 	}
 	seed, relayOnly, address := n.state.IrohSeed, n.state.RelayOnly, n.state.Address
+	peers := n.allowedLocked()
 	n.mu.Unlock()
-	result, err := bridge(map[string]any{"op": "start", "key": hex.EncodeToString(seed[:]), "relayOnly": relayOnly})
+	result, err := bridge(map[string]any{"op": "start", "key": hex.EncodeToString(seed[:]), "relayOnly": relayOnly, "peers": peers})
 	if err != nil {
 		return errors.New("Не удалось запустить iroh. Выключите и включите приём.")
 	}
@@ -110,15 +130,18 @@ func (n *Node) startLocked() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	n.mu.Lock()
 	n.link = link
+	_, _ = link.call("allow", map[string]any{"peers": n.allowedLocked()})
 	n.cancel = cancel
 	n.enabled = true
 	n.online = false
 	n.status = "Подключение к iroh…"
+	n.revision++
 	n.generation++
 	gen := n.generation
 	n.mu.Unlock()
 	go n.receiveIroh(ctx, link)
 	go n.runIroh(ctx, link, gen)
+	go n.runDelivery(ctx, link)
 	return nil
 }
 func (n *Node) Stop() { n.life.Lock(); defer n.life.Unlock(); n.stopLocked() }
@@ -131,6 +154,7 @@ func (n *Node) stopLocked() {
 	n.enabled = false
 	n.online = false
 	n.status = "Приём выключен"
+	n.revision++
 	n.relay = ""
 	n.mu.Unlock()
 	if cancel != nil {
@@ -141,10 +165,8 @@ func (n *Node) stopLocked() {
 	}
 }
 func (n *Node) runIroh(ctx context.Context, link *irohLink, gen int) {
-	client := &http.Client{Transport: link}
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
-	nextFlush := time.Time{}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -155,6 +177,7 @@ func (n *Node) runIroh(ctx context.Context, link *irohLink, gen int) {
 			n.mu.Unlock()
 			return
 		}
+		previousStatus, previousOnline, previousRelay := n.status, n.online, n.relay
 		n.online = err == nil && status.Online
 		n.relay = status.Relay
 		if n.online {
@@ -165,19 +188,55 @@ func (n *Node) runIroh(ctx context.Context, link *irohLink, gen int) {
 		} else {
 			n.status = "Ожидание сети iroh…"
 		}
-		n.mu.Unlock()
-		if time.Now().After(nextFlush) {
-			n.flush(ctx, client)
-			nextFlush = time.Now().Add(12 * time.Second)
+		if previousStatus != n.status || previousOnline != n.online || previousRelay != n.relay {
+			n.revision++
 		}
+		n.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// Delivery can wait for peers without delaying network status or UI polling.
+func (n *Node) runDelivery(ctx context.Context, link *irohLink) {
+	client := &http.Client{Transport: link}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		n.flush(ctx, client)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		case <-n.wake:
-			nextFlush = time.Time{}
 		}
 	}
+}
+func (n *Node) allowedLocked() []string {
+	peers := []string{}
+	for _, c := range n.state.Contacts {
+		if validAddress(c.Address) {
+			peers = append(peers, c.Address)
+		}
+	}
+	return peers
+}
+func (n *Node) commitContacts(state diskState) error {
+	if err := n.commit(state); err != nil {
+		return err
+	}
+	if n.link != nil {
+		_, _ = n.link.call("allow", map[string]any{"peers": n.allowedLocked()})
+	}
+	n.retry = map[string]retryState{}
+	select {
+	case n.wake <- struct{}{}:
+	default:
+	}
+	return nil
 }
 func (n *Node) receiveIroh(ctx context.Context, link *irohLink) {
 	for ctx.Err() == nil {
@@ -253,6 +312,7 @@ func (n *Node) SetRelayOnly(value bool) error {
 }
 func (n *Node) NetworkChanged() {
 	n.mu.Lock()
+	n.retry = map[string]retryState{}
 	link := n.link
 	n.mu.Unlock()
 	if link != nil {

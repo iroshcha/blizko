@@ -41,9 +41,13 @@ func (n *Node) recordDeliveryIssue(peer, issue string) {
 			break
 		}
 	}
+	previous := n.deliveryIssues[peer]
 	if !pending {
 		delete(n.deliveryIssues, peer)
 	} else if issue != "" {
 		n.deliveryIssues[peer] = issue
+	}
+	if previous != n.deliveryIssues[peer] {
+		n.revision++
 	}
 }

@@ -29,6 +29,8 @@ type message struct {
 	Delivered bool      `json:"delivered"`
 	Time      int64     `json:"time"`
 	Packet    *envelope `json:"packet,omitempty"`
+	Order     int64     `json:"order"`
+	Archived  bool      `json:"archived,omitempty"`
 }
 type diskState struct {
 	Version   int       `json:"v"`
@@ -55,6 +57,12 @@ type Node struct {
 	generation     int
 	deliveryIssues map[string]string // Local runtime diagnostics, never message contents or server storage.
 	relay          string
+	revision       uint64
+	nextOrder      int64
+	incoming       int
+	messageIndexes map[string]int
+	retry          map[string]retryState
+	flushMu        sync.Mutex
 }
 
 func NewNode(dir string, storageKey []byte) (*Node, error) {
@@ -75,7 +83,7 @@ func NewNode(dir string, storageKey []byte) (*Node, error) {
 		}
 	} else if e != nil {
 		return nil, errors.New("Не удалось расшифровать хранилище. Данные не удалены.")
-	} else if e = json.Unmarshal(b, &n.state); e != nil || (n.state.Version != 2 && n.state.Version != 3) {
+	} else if e = json.Unmarshal(b, &n.state); e != nil || (n.state.Version != 2 && n.state.Version != 3 && n.state.Version != 4) {
 		return nil, errors.New("Неизвестный формат хранилища")
 	}
 
@@ -95,23 +103,59 @@ func NewNode(dir string, storageKey []byte) (*Node, error) {
 			return nil, e
 		}
 	}
+	if n.state.Version == 4 {
+		messages, err := v.readMessages()
+		if err != nil {
+			return nil, errors.New("Не удалось расшифровать записи истории. Данные не удалены.")
+		}
+		n.state.Messages = messages
+	} else {
+		state := n.clone()
+		state.Version = 4
+		if e = n.commit(state); e != nil {
+			return nil, e
+		}
+	}
+	n.rebuildIndexes()
 	return n, nil
 }
+
+// Message packets are immutable after creation; cloning slices is sufficient.
 func (n *Node) clone() diskState {
-	b, _ := json.Marshal(n.state)
-	var s diskState
-	_ = json.Unmarshal(b, &s)
-	return s
+	state := n.state
+	state.Contacts = append([]contact{}, n.state.Contacts...)
+	state.Messages = append([]message{}, n.state.Messages...)
+	return state
 }
-func (n *Node) commit(s diskState) error {
-	b, e := json.Marshal(s)
-	if e != nil {
-		return e
+func (n *Node) commit(state diskState) error {
+	metadata := state
+	if state.Version == 4 {
+		order := n.nextOrder
+		for i, m := range state.Messages {
+			if m.Order == 0 {
+				order++
+				m.Order = order
+				state.Messages[i] = m
+			}
+			index, exists := n.messageIndexes[recordID(m)]
+			if n.state.Version != 4 || !exists || n.state.Messages[index] != m {
+				if err := n.storage.writeMessage(m); err != nil {
+					return err
+				}
+			}
+		}
+		metadata = state
+		metadata.Messages = []message{}
 	}
-	if e = n.storage.write("chat-v2", b); e != nil {
-		return e
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return err
 	}
-	n.state = s
+	if err = n.storage.write("chat-v2", raw); err != nil {
+		return err
+	}
+	n.state = state
+	n.rebuildIndexes()
 	return nil
 }
 func (n *Node) self() contact {
@@ -125,25 +169,74 @@ func (n *Node) peer(id string) (contact, bool) {
 	}
 	return contact{}, false
 }
-func (n *Node) Snapshot() string {
+func (n *Node) statusLocked() map[string]any {
+	return map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "address": n.state.Address, "id": keyID(n.state.Public), "incoming": n.incoming, "revision": n.revision, "relay": n.relay, "relayOnly": n.state.RelayOnly, "transport": "iroh"}
+}
+
+// Status is bounded and does not serialize history or wait for network I/O.
+func (n *Node) Status() string {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	msgs := make([]message, len(n.state.Messages))
-	copy(msgs, n.state.Messages)
-	incoming := 0
-	for i := range msgs {
-		msgs[i].Packet = nil
-		if !msgs[i].Out {
-			incoming++
+	status := n.statusLocked()
+	n.mu.Unlock()
+	raw, _ := json.Marshal(status)
+	return string(raw)
+}
+func (n *Node) Snapshot() string { return n.snapshot("", 0, 0) }
+
+// before is an exclusive local order cursor. A zero cursor selects recent rows.
+func (n *Node) SnapshotPage(peer string, before int64, limit int) string {
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	return n.snapshot(peer, before, limit)
+}
+func (n *Node) snapshot(peer string, before int64, limit int) string {
+	n.mu.Lock()
+	status := n.statusLocked()
+	messages := []message{}
+	hasMore := false
+	for i := len(n.state.Messages) - 1; i >= 0; i-- {
+		m := n.state.Messages[i]
+		if m.Archived || (peer != "" && m.Peer != peer) || (before > 0 && m.Order >= before) {
+			continue
+		}
+		if limit > 0 && len(messages) >= limit {
+			hasMore = true
+			break
+		}
+		m.Packet = nil
+		messages = append(messages, m)
+	}
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+	status["contacts"] = append([]contact{}, n.state.Contacts...)
+	issues := map[string]string{}
+	for id, value := range n.deliveryIssues {
+		issues[id] = value
+	}
+	previews := map[string]string{}
+	for i := len(n.state.Messages) - 1; i >= 0; i-- {
+		m := n.state.Messages[i]
+		if !m.Archived {
+			if _, ok := previews[m.Peer]; !ok {
+				previews[m.Peer] = m.Text
+			}
+		}
+		if len(previews) == len(n.state.Contacts) {
+			break
 		}
 	}
-	s := map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "address": n.state.Address, "id": keyID(n.state.Public), "contacts": n.state.Contacts, "messages": msgs, "incoming": incoming}
-	s["deliveryIssues"] = n.deliveryIssues
-	s["relay"] = n.relay
-	s["relayOnly"] = n.state.RelayOnly
-	s["transport"] = "iroh"
-	b, _ := json.Marshal(s)
-	return string(b)
+	status["messages"] = messages
+	status["hasMore"] = hasMore
+	status["deliveryIssues"] = issues
+	status["previews"] = previews
+	n.mu.Unlock()
+	raw, _ := json.Marshal(status)
+	return string(raw)
 }
 func (n *Node) MyCode() (string, error) {
 	n.mu.Lock()
@@ -172,14 +265,14 @@ func (n *Node) AddContact(name, code string) error {
 	for i := range s.Contacts {
 		if s.Contacts[i].ID == c.ID {
 			s.Contacts[i] = c
-			return n.commit(s)
+			return n.commitContacts(s)
 		}
 	}
 	if len(s.Contacts) >= 100 {
 		return errors.New("Лимит прототипа: 100 контактов")
 	}
 	s.Contacts = append(s.Contacts, c)
-	return n.commit(s)
+	return n.commitContacts(s)
 }
 func (n *Node) Send(peerID, text string) error {
 	text = strings.TrimSpace(text)
@@ -198,8 +291,8 @@ func (n *Node) Send(peerID, text string) error {
 			pending++
 		}
 	}
-	if pending >= 100 || len(n.state.Messages) >= 2000 {
-		return errors.New("Лимит прототипа: 100 ожидающих или 2000 сообщений всего")
+	if pending >= 1000 {
+		return errors.New("Очередь содержит 1000 ожидающих сообщений. Дождитесь доставки.")
 	}
 	id := randomID()
 	p := payload{Version: 2, ID: id, From: keyID(n.state.Public), To: peerID, Kind: "text", Text: text}
@@ -207,9 +300,7 @@ func (n *Node) Send(peerID, text string) error {
 	if e != nil {
 		return e
 	}
-	s := n.clone()
-	s.Messages = append(s.Messages, message{ID: id, Peer: peerID, Text: text, Out: true, Time: time.Now().UnixMilli(), Packet: &env})
-	if e = n.commit(s); e != nil {
+	if e = n.storeMessage(message{ID: id, Peer: peerID, Text: text, Out: true, Time: time.Now().UnixMilli(), Packet: &env}, -1); e != nil {
 		return e
 	}
 	select {
@@ -229,20 +320,9 @@ func (n *Node) accept(env envelope) (envelope, bool, error) {
 	if e != nil || p.Kind != "text" {
 		return envelope{}, false, errInvalidMessage
 	}
-	duplicate := false
-	for _, m := range n.state.Messages {
-		if !m.Out && m.Peer == p.From && m.ID == p.ID {
-			duplicate = true
-			break
-		}
-	}
+	_, duplicate := n.messageIndexes[recordID(message{Peer: p.From, ID: p.ID})]
 	if !duplicate {
-		if len(n.state.Messages) >= 2000 {
-			return envelope{}, false, errHistoryFull
-		}
-		s := n.clone()
-		s.Messages = append(s.Messages, message{ID: p.ID, Peer: p.From, Text: p.Text, Delivered: true, Time: time.Now().UnixMilli()})
-		if e = n.commit(s); e != nil {
+		if e = n.storeMessage(message{ID: p.ID, Peer: p.From, Text: p.Text, Delivered: true, Time: time.Now().UnixMilli()}, -1); e != nil {
 			return envelope{}, false, e
 		}
 	}
@@ -264,13 +344,12 @@ func (n *Node) applyAck(env envelope, peerID, messageID string) error {
 	if p.Kind != "ack" || p.Ack != messageID {
 		return errors.New("invalid receipt")
 	}
-	for i, m := range n.state.Messages {
-		if m.Out && m.ID == messageID && m.Peer == peerID && !m.Delivered {
-			s := n.clone()
-			s.Messages[i].Delivered = true
-			s.Messages[i].Packet = nil
-			return n.commit(s)
-		}
+	index, exists := n.messageIndexes[recordID(message{Peer: peerID, ID: messageID, Out: true})]
+	if exists && !n.state.Messages[index].Delivered {
+		m := n.state.Messages[index]
+		m.Delivered = true
+		m.Packet = nil
+		return n.storeMessage(m, index)
 	}
 	return nil
 }
@@ -319,6 +398,8 @@ func (n *Node) flush(ctx context.Context, client *http.Client) {
 	n.flushRoutes(ctx, client)
 }
 func (n *Node) flushRoutes(ctx context.Context, client *http.Client) {
+	n.flushMu.Lock()
+	defer n.flushMu.Unlock()
 	n.mu.Lock()
 	var pending []message
 	peers := map[string]contact{}
@@ -331,53 +412,96 @@ func (n *Node) flushRoutes(ctx context.Context, client *http.Client) {
 		}
 	}
 	n.mu.Unlock()
-	sem := make(chan struct{}, 4)
-	var wg sync.WaitGroup
+	// One sequential worker per contact keeps order. A failed contact consumes
+	// at most one attempt per pass and cannot monopolize the global queue.
+	groups := map[string][]message{}
+	order := []string{}
 	for _, m := range pending {
-		if ctx.Err() != nil {
-			break
+		if _, ok := groups[m.Peer]; !ok {
+			order = append(order, m.Peer)
 		}
-		c, ok := peers[m.Peer]
+		groups[m.Peer] = append(groups[m.Peer], m)
+	}
+	sem := make(chan struct{}, 4)
+	var workers sync.WaitGroup
+	for _, peer := range order {
+		c, ok := peers[peer]
 		if !ok {
 			continue
 		}
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(m message, c contact) {
-			defer wg.Done()
+		n.mu.Lock()
+		retry := n.retry[peer]
+		n.mu.Unlock()
+		if time.Now().Before(retry.next) {
+			continue
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			workers.Wait()
+			return
+		}
+		workers.Add(1)
+		go func(c contact, queue []message) {
+			defer workers.Done()
 			defer func() { <-sem }()
-			issue := "Телефон собеседника недоступен. Откройте «Близко» и включите приём на обоих телефонах. Сообщение остаётся в очереди."
-			defer func() {
-				if ctx.Err() == nil {
-					n.recordDeliveryIssue(c.ID, issue)
+			for _, m := range queue {
+				if ctx.Err() != nil {
+					return
 				}
-			}()
-
-			if !validAddress(c.Address) {
-				issue = "Обменяйтесь новыми QR после обновления обоих телефонов. История сохранена."
-				return
+				issue := n.deliverOne(ctx, client, m, c)
+				if ctx.Err() != nil {
+					return
+				}
+				n.recordDeliveryIssue(c.ID, issue)
+				n.mu.Lock()
+				if n.retry == nil {
+					n.retry = map[string]retryState{}
+				}
+				if issue != "" {
+					r := n.retry[c.ID]
+					r.failures++
+					delay := time.Duration(1<<min(r.failures, 5)) * time.Second
+					n.retry[c.ID] = retryState{failures: r.failures, next: time.Now().Add(delay + time.Duration(time.Now().UnixNano()%1000)*time.Millisecond)}
+				} else {
+					delete(n.retry, c.ID)
+				}
+				n.mu.Unlock()
+				if issue != "" {
+					return
+				}
 			}
-			b, _ := json.Marshal(m.Packet)
-			req, e := http.NewRequestWithContext(ctx, "POST", "http://"+net.JoinHostPort(c.Address, "47831")+"/message", bytes.NewReader(b))
-			if e != nil {
-				return
-			}
-			req.Header.Set("Content-Type", "application/json")
-			res, e := client.Do(req)
-			if e != nil {
-				return
-			}
-			defer res.Body.Close()
-			if res.StatusCode != 200 {
-				issue = deliveryResponseIssue(res)
-				return
-			}
-			var ack envelope
-			issue = "Не удалось проверить подтверждение доставки. Сообщение осталось в очереди. Проверьте QR-контакты и версии приложения на обоих телефонах."
-			if e = json.NewDecoder(io.LimitReader(res.Body, 20000)).Decode(&ack); e == nil && n.applyAck(ack, m.Peer, m.ID) == nil {
-				issue = ""
-			}
-		}(m, c)
+		}(c, groups[peer])
 	}
-	wg.Wait()
+	workers.Wait()
+}
+
+type retryState struct {
+	failures int
+	next     time.Time
+}
+
+func (n *Node) deliverOne(ctx context.Context, client *http.Client, m message, c contact) string {
+	if !validAddress(c.Address) {
+		return "Обменяйтесь новыми QR после обновления обоих телефонов. История сохранена."
+	}
+	raw, _ := json.Marshal(m.Packet)
+	request, err := http.NewRequestWithContext(ctx, "POST", "http://"+net.JoinHostPort(c.Address, "47831")+"/message", bytes.NewReader(raw))
+	if err != nil {
+		return "Не удалось подготовить сообщение. Оно осталось в очереди."
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return "Собеседник недоступен. Сообщение осталось в очереди; отправка будет повторена."
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		return deliveryResponseIssue(response)
+	}
+	var ack envelope
+	if err = json.NewDecoder(io.LimitReader(response.Body, 20000)).Decode(&ack); err != nil || n.applyAck(ack, m.Peer, m.ID) != nil {
+		return "Не удалось проверить подтверждение доставки. Сообщение осталось в очереди."
+	}
+	return ""
 }

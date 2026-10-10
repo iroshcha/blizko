@@ -22,6 +22,7 @@ namespace Blizko {
         public bool @out { get; set; }
         public bool delivered { get; set; }
         public long time { get; set; }
+        public long order { get; set; }
     }
     public sealed class Snapshot {
         public string id { get; set; }
@@ -30,6 +31,9 @@ namespace Blizko {
         public bool online { get; set; }
         public bool relayOnly { get; set; }
         public int incoming { get; set; }
+        public long revision { get; set; }
+        public bool hasMore { get; set; }
+        public Dictionary<string, string> previews { get; set; }
         public List<Contact> contacts { get; set; }
         public List<ChatMessage> messages { get; set; }
         public Dictionary<string, string> deliveryIssues { get; set; }
@@ -71,12 +75,12 @@ namespace Blizko {
             }
             return result.Append('\\', slashes * 2).Append('"').ToString();
         }
-        public async Task<Reply> Request(string op, string first = "", string second = "", bool value = false) {
+        public async Task<Reply> Request(string op, string first = "", string second = "", bool value = false, long before = 0, int limit = 50) {
             await serial.WaitAsync();
             try {
                 if (disposed || process.HasExited) throw new IOException("Ядро остановлено. Откройте приложение заново; история сохранена.");
                 int id = ++sequence;
-                string request = json.Serialize(new { id = id, op = op, first = first, second = second, value = value });
+                string request = json.Serialize(new { id = id, op = op, first = first, second = second, value = value, before = before, limit = limit });
                 await input.WriteLineAsync(request);
                 Task<string> read = process.StandardOutput.ReadLineAsync();
                 if (await Task.WhenAny(read, Task.Delay(40000)) != read) {
