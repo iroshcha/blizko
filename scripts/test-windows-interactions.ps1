@@ -15,5 +15,8 @@ $compilerArgs+="$taskRoot\windows\tests\InteractionRegression.cs"
 if($LASTEXITCODE -ne 0){throw 'UI regression compilation failed'}
 Copy-Item -LiteralPath $ZxingDll -Destination $OutputDirectory
 Copy-Item -LiteralPath "$taskRoot\windows\Blizko.exe.config" -Destination "$OutputDirectory\InteractionRegression.exe.config"
-& "$OutputDirectory\InteractionRegression.exe" | Tee-Object -FilePath "$OutputDirectory\interactions.txt"
-if($LASTEXITCODE -ne 0){throw 'UI interaction regression failed'}
+$test=Start-Process -FilePath "$OutputDirectory\InteractionRegression.exe" -WindowStyle Hidden -PassThru -RedirectStandardOutput "$OutputDirectory\interactions.txt" -RedirectStandardError "$OutputDirectory\interaction-errors.txt"
+if(-not $test.WaitForExit(90000)){$test.Kill();throw 'UI interaction regression timed out'}
+Get-Content -LiteralPath "$OutputDirectory\interactions.txt"
+Get-Content -LiteralPath "$OutputDirectory\interaction-errors.txt"
+if($test.ExitCode -ne 0){throw 'UI interaction regression failed'}
