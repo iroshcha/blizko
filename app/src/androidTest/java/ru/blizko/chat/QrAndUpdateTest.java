@@ -30,7 +30,7 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
                 check(!new JSONObject(app.node.status()).getBoolean("enabled"),"Explicit stop left node enabled");
                 result.putString("stream","OK: explicit stop disables receive and automatic restart");finish(Activity.RESULT_OK,result);return;
             }
-            testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testApk();testAutomaticUpdates();IrohDeliveryCheck.run(getTargetContext());
+            testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testConversationTools();testApk();testAutomaticUpdates();IrohDeliveryCheck.run(getTargetContext());
             result.putString("stream","OK: repeated startup, paged history and focused draft, QR, APK validation, persistent update scheduling and deduplicated notifications, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);
         }
         catch(Throwable failure){result.putString("stream","FAIL: "+failure.getClass().getSimpleName()+": "+failure.getMessage());finish(Activity.RESULT_CANCELED,result);}
@@ -147,6 +147,24 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
     private EditText findInput(View view){
         if(view instanceof EditText)return (EditText)view;
         if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++){EditText found=findInput(group.getChildAt(i));if(found!=null)return found;}}return null;
+    }
+    private void testConversationTools()throws Exception{
+        MainActivity activity=(MainActivity)startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));ChatApp app=(ChatApp)activity.getApplication();Thread.sleep(1500);waitForIdleSync();
+        String id=new JSONObject(app.node.snapshot()).getJSONArray("contacts").getJSONObject(0).getString("id");
+        runOnMainSync(()->{View row=findText(activity.getWindow().getDecorView(),"History regression");check(row!=null,"Contact missing after returning");((View)row.getParent()).performClick();});Thread.sleep(1500);waitForIdleSync();
+        runOnMainSync(()->{EditText editor=findInput(activity.getWindow().getDecorView());check("draft retained".contentEquals(editor.getText()),"Switching activity lost saved draft");editor.setText(String.join("",java.util.Collections.nCopies(2100,"я")));check(editor.getText().toString().getBytes(StandardCharsets.UTF_8).length==4000,"Composer byte boundary wrong");editor.setText("persistent draft");activity.onBackPressed();});
+        app.io.submit(()->{}).get(60,java.util.concurrent.TimeUnit.SECONDS);Thread.sleep(1500);waitForIdleSync();
+        runOnMainSync(()->{View row=findText(activity.getWindow().getDecorView(),"History regression");check(row!=null,"Contact missing on home");((View)row.getParent()).performClick();});Thread.sleep(1500);waitForIdleSync();
+        AlertDialog[] prompt=new AlertDialog[1];
+        runOnMainSync(()->{check("persistent draft".contentEquals(findInput(activity.getWindow().getDecorView()).getText()),"Back lost per-contact draft");View find=findText(activity.getWindow().getDecorView(),"Найти");check(find!=null,"Conversation search missing");prompt[0]=activity.searchMessages();});waitForIdleSync();
+        runOnMainSync(()->{findInput(prompt[0].getWindow().getDecorView()).setText("HISTORY 0");prompt[0].getButton(AlertDialog.BUTTON_POSITIVE).performClick();});Thread.sleep(1500);waitForIdleSync();
+        runOnMainSync(()->{check(findText(activity.getWindow().getDecorView(),"history 0")!=null,"Search result not rendered");check(findText(activity.getWindow().getDecorView(),"history 64")==null,"Search displays unmatched recent rows");View reset=findText(activity.getWindow().getDecorView(),"Поиск: HISTORY 0 · Сбросить");check(reset!=null,"Search reset missing");reset.performClick();});Thread.sleep(1500);waitForIdleSync();
+        JSONObject results=new JSONObject(app.node.searchPage(id,"HISTORY 0",0,50));check(results.getJSONArray("messages").length()==1,"Search does not inspect older pages");
+        JSONArray messages=new JSONObject(app.node.snapshotPage(id,0,50)).getJSONArray("messages");String pending=messages.getJSONObject(messages.length()-1).getString("id");
+        app.io.submit(()->{app.node.cancelMessage(id,pending);return null;}).get(60,java.util.concurrent.TimeUnit.SECONDS);
+        check(new JSONObject(app.node.snapshotPage(id,0,50)).getJSONArray("messages").getJSONObject(messages.length()-1).getBoolean("cancelled"),"Cancel not shown in snapshot");
+        app.io.submit(()->{app.node.retryMessage(id,pending);return null;}).get(60,java.util.concurrent.TimeUnit.SECONDS);
+        runOnMainSync(activity::finish);
     }
     private AppUpdates.Release release(File file,int version,String hash)throws Exception{
         return new AppUpdates.Release(new JSONObject().put("versionCode",version).put("versionName","test")

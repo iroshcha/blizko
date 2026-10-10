@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"blizko/core/mobile"
 )
@@ -37,6 +38,11 @@ func run(input io.Reader, output io.Writer, node *mobile.Node) error {
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 4096), 65536)
 	writer := json.NewEncoder(output)
+	var outputMu sync.Mutex
+	var checks sync.WaitGroup
+	checkSlots := make(chan struct{}, 4)
+	write := func(result response) error { outputMu.Lock(); defer outputMu.Unlock(); return writer.Encode(result) }
+	defer checks.Wait()
 	for scanner.Scan() {
 		var request command
 		var result response
@@ -44,11 +50,52 @@ func run(input io.Reader, output io.Writer, node *mobile.Node) error {
 			result.Error = "Неверная команда"
 		} else {
 			result.ID = request.ID
+			if request.Op == "check" || request.Op == "search" {
+				select {
+				case checkSlots <- struct{}{}:
+					checks.Add(1)
+					go func(request command) {
+						defer checks.Done()
+						defer func() { <-checkSlots }()
+						result := response{ID: request.ID}
+						if request.Op == "search" {
+							result.Snapshot = json.RawMessage(node.SearchPage(request.First, request.Second, request.Before, request.Limit))
+						} else {
+							code, err := node.CheckContact(request.First)
+							result.Code = code
+							if err != nil {
+								result.Error = err.Error()
+							}
+							result.Snapshot = json.RawMessage(node.Status())
+						}
+						_ = write(result)
+					}(request)
+				default:
+					_ = write(response{ID: request.ID, Error: "Дождитесь завершения предыдущих проверок"})
+				}
+				continue
+			}
 			var err error
 			switch request.Op {
-			case "snapshot", "page", "status":
+			case "snapshot", "page", "status", "search", "unread":
 			case "clear":
-				err = node.ClearHistory(request.First)
+				err = node.BeginClearHistory(request.First)
+			case "clear-cancel":
+				node.CancelClearHistory()
+			case "cancel":
+				err = node.CancelMessage(request.First, request.Second)
+			case "retry":
+				err = node.RetryMessage(request.First, request.Second)
+			case "draft":
+				err = node.SaveDraft(request.First, request.Second)
+			case "draft-sent":
+				err = node.ClearSentDraft(request.First, request.Second)
+			case "read":
+				err = node.MarkRead(request.First, request.Before)
+			case "check-cancel":
+				node.CancelContactCheck(request.First)
+			case "network-state":
+				node.SetNetworkAvailable(request.Value)
 			case "start":
 				err = node.Start()
 			case "stop":
@@ -59,8 +106,6 @@ func run(input io.Reader, output io.Writer, node *mobile.Node) error {
 				err = node.Send(request.First, request.Second)
 			case "code":
 				result.Code, err = node.MyCode()
-			case "check":
-				result.Code, err = node.CheckContact(request.First)
 			case "relay":
 				err = node.SetRelayOnly(request.Value)
 			case "server":
@@ -68,15 +113,20 @@ func run(input io.Reader, output io.Writer, node *mobile.Node) error {
 			case "network":
 				node.NetworkChanged()
 			case "quit":
+				node.CancelClearHistory()
 				node.Stop()
-				return writer.Encode(response{ID: request.ID})
+				return write(response{ID: request.ID})
 			default:
 				result.Error = "Неизвестная команда"
 			}
 			if err != nil {
 				result.Error = err.Error()
 			}
-			if request.Op == "status" {
+			if request.Op == "search" {
+				result.Snapshot = json.RawMessage(node.SearchPage(request.First, request.Second, request.Before, request.Limit))
+			} else if request.Op == "unread" {
+				result.Snapshot = json.RawMessage(node.UnreadPage(request.First, request.Limit))
+			} else if request.Op == "status" || request.Op == "draft" || request.Op == "draft-sent" || request.Op == "read" {
 				result.Snapshot = json.RawMessage(node.Status())
 			} else {
 				peer := ""
@@ -86,10 +136,12 @@ func run(input io.Reader, output io.Writer, node *mobile.Node) error {
 				result.Snapshot = json.RawMessage(node.SnapshotPage(peer, request.Before, request.Limit))
 			}
 		}
-		if err := writer.Encode(result); err != nil {
+		if err := write(result); err != nil {
 			return err
 		}
 	}
+	node.Stop()
+	node.CancelClearHistory()
 	return scanner.Err()
 }
 

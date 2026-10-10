@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,7 +21,7 @@ func recordID(m message) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (v *vault) writeMessage(m message) error {
+func (v *vault) writeMessageRaw(m message) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	dir := filepath.Join(v.dir, "messages")
@@ -63,6 +64,31 @@ func (v *vault) writeMessage(m message) error {
 		return closeErr
 	}
 	return replaceVaultFile(tmp, filepath.Join(dir, name+".enc"))
+}
+
+func (v *vault) writeMessage(m message) error {
+	v.recordMu.Lock()
+	defer v.recordMu.Unlock()
+	if v.integrity == nil {
+		return v.writeMessageRaw(m)
+	}
+	if v.integrity.failed {
+		return errors.New("Хранилище требует повторного открытия. Данные не удалены.")
+	}
+	pending := recordIntent{Base: v.integrity.head, Message: m}
+	raw, err := json.Marshal(pending)
+	if err != nil {
+		return err
+	}
+	if err = v.write("record-pending", raw); err != nil {
+		v.integrity.failed = true
+		return err
+	}
+	err = v.finishRecordIntent(pending, false)
+	if err != nil {
+		v.integrity.failed = true
+	}
+	return err
 }
 
 func (v *vault) readMessages() ([]message, error) {
@@ -123,14 +149,20 @@ func (v *vault) readMessages() ([]message, error) {
 func (n *Node) rebuildIndexes() {
 	n.messageIndexes = make(map[string]int, len(n.state.Messages))
 	n.historyIndexes = map[string][]int{}
+	n.visibleIndexes = nil
+	n.inboxIndexes = map[string][]int{}
 	n.previews = map[string]string{}
 	n.incoming = 0
 	n.nextOrder = 0
 	for i, m := range n.state.Messages {
 		n.messageIndexes[recordID(m)] = i
 		if !m.Archived {
+			n.visibleIndexes = append(n.visibleIndexes, i)
 			n.historyIndexes[m.Peer] = append(n.historyIndexes[m.Peer], i)
 			n.previews[m.Peer] = m.Text
+			if !m.Out {
+				n.inboxIndexes[m.Peer] = append(n.inboxIndexes[m.Peer], i)
+			}
 		}
 		if m.Order > n.nextOrder {
 			n.nextOrder = m.Order
@@ -153,8 +185,12 @@ func (n *Node) storeMessage(m message, index int) error {
 		n.state.Messages = append(n.state.Messages, m)
 		n.messageIndexes[recordID(m)] = len(n.state.Messages) - 1
 		if !m.Archived {
+			n.visibleIndexes = append(n.visibleIndexes, len(n.state.Messages)-1)
 			n.historyIndexes[m.Peer] = append(n.historyIndexes[m.Peer], len(n.state.Messages)-1)
 			n.previews[m.Peer] = m.Text
+			if !m.Out {
+				n.inboxIndexes[m.Peer] = append(n.inboxIndexes[m.Peer], len(n.state.Messages)-1)
+			}
 		}
 		if !m.Out {
 			n.incoming++
@@ -172,6 +208,9 @@ func (n *Node) storeMessage(m message, index int) error {
 // Clear only displayed history; durable tombstones retain duplicate detection.
 // Pending outbound messages and device/contact keys are deliberately retained.
 func (n *Node) ClearHistory(peer string) error {
+	return n.clearHistory(context.Background(), peer, nil)
+}
+func (n *Node) clearHistory(ctx context.Context, peer string, progress func(int, int)) error {
 	n.mu.Lock()
 	if _, ok := n.peer(peer); !ok {
 		n.mu.Unlock()
@@ -179,15 +218,21 @@ func (n *Node) ClearHistory(peer string) error {
 	}
 	indices := []int{}
 	for i, m := range n.state.Messages {
-		if m.Peer != peer || m.Archived || (m.Out && !m.Delivered) {
+		if m.Peer != peer || m.Archived || (m.Out && !m.Delivered && !m.Cancelled) {
 			continue
 		}
 		indices = append(indices, i)
 	}
 	n.mu.Unlock()
+	if progress != nil {
+		progress(0, len(indices))
+	}
 	// Permit delivery and status reads between atomic record writes.
 	defer func() { n.mu.Lock(); n.rebuildIndexes(); n.mu.Unlock() }()
-	for _, i := range indices {
+	for done, i := range indices {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		n.mu.Lock()
 		m := n.state.Messages[i]
 		if m.Archived {
@@ -201,6 +246,9 @@ func (n *Node) ClearHistory(peer string) error {
 		n.mu.Unlock()
 		if err != nil {
 			return err
+		}
+		if progress != nil {
+			progress(done+1, len(indices))
 		}
 	}
 	return nil

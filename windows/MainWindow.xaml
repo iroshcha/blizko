@@ -86,7 +86,7 @@
                   <TextBlock Text="{Binding Initial}" FontSize="18" Foreground="#236C58" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
                 <StackPanel Grid.Column="1" Margin="6,0,0,0">
-                  <TextBlock Text="{Binding name}" FontWeight="SemiBold" FontSize="15" TextTrimming="CharacterEllipsis"/>
+                  <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" FontSize="15" TextTrimming="CharacterEllipsis"/>
                   <TextBlock Text="{Binding Preview}" FontSize="12" Foreground="#65766F" Margin="0,5,0,0" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
               </Grid>
@@ -96,7 +96,7 @@
         </Grid>
         <DockPanel Grid.Row="5" Margin="0,18,0,0">
           <Button x:Name="Settings" Content="Настройки" Padding="10,8" Background="Transparent"/>
-          <TextBlock Text="Windows · 0.2.2" Foreground="#829087" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+          <TextBlock Text="Windows · 0.2.4" Foreground="#829087" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/>
         </DockPanel>
       </Grid>
     </Border>
@@ -105,7 +105,7 @@
       <Border Background="White" BorderBrush="#E2E7E0" BorderThickness="0,0,0,1" Padding="28,24">
         <DockPanel>
           <Button x:Name="CheckContact" Content="Проверить связь" DockPanel.Dock="Right" Background="#F0F4EE" IsEnabled="False" VerticalAlignment="Center" Margin="12,0,0,0"/>
-          <StackPanel><TextBlock x:Name="ChatTitle" Text="Ваш первый разговор" FontSize="23" FontWeight="SemiBold"/>
+          <StackPanel><TextBlock x:Name="ChatTitle" Text="Ваш первый разговор" FontSize="23" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
             <TextBlock x:Name="ChatSubtitle" Text="Без регистрации. По вашему QR." Foreground="#65766F" Margin="0,5,0,0"/></StackPanel>
         </DockPanel>
       </Border>
@@ -114,11 +114,12 @@
       </Border>
       <Grid Grid.Row="2">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-        <StackPanel x:Name="HistoryControls" Orientation="Horizontal" Margin="28,10,28,0" Visibility="Collapsed">
+        <WrapPanel x:Name="HistoryControls" Orientation="Horizontal" Margin="28,10,28,0" Visibility="Collapsed">
           <Button x:Name="Older" Content="Раньше" Margin="0,0,8,0"/>
           <Button x:Name="Recent" Content="Последние" Margin="0,0,8,0"/>
+          <Button x:Name="FindMessages" Content="Найти" Margin="0,0,8,0"/>
           <Button x:Name="ClearHistory" Content="Очистить историю"/>
-        </StackPanel>
+        </WrapPanel>
         <ScrollViewer Grid.Row="1" x:Name="MessageScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
           <StackPanel x:Name="Messages" Margin="28,18,28,18"/>
         </ScrollViewer>
@@ -132,7 +133,7 @@
             </Border>
           </Grid>
           <TextBlock Text="Рядом, даже на расстоянии" FontSize="24" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
-          <TextBlock Text="Добавьте QR друга и отправьте ему свой. Можно общаться с Android, iPhone и другим компьютером." Foreground="#65766F" FontSize="15" TextAlignment="Center" TextWrapping="Wrap" Margin="0,14,0,0" LineHeight="24"/>
+          <TextBlock Text="Добавьте QR друга и отправьте ему свой. Можно общаться с Android и другим компьютером." Foreground="#65766F" FontSize="15" TextAlignment="Center" TextWrapping="Wrap" Margin="0,14,0,0" LineHeight="24"/>
           <TextBlock Text="История и недоставленные сообщения&#10;сохраняются на этом компьютере." Foreground="#829087" FontSize="12" TextAlignment="Center" Margin="0,24,0,0" LineHeight="20"/>
         </StackPanel>
       </Grid>

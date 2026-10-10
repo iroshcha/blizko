@@ -95,7 +95,7 @@ func TestV3MigrationRetainsKeysOutboxAndEncryptedRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	newCode, _ := migrated.MyCode()
-	if newCode != oldCode || migrated.state.Version != 4 || len(migrated.state.Messages) != 1 || migrated.state.Messages[0].Packet == nil {
+	if newCode != oldCode || migrated.state.Version != 5 || len(migrated.state.Messages) != 1 || migrated.state.Messages[0].Packet == nil {
 		t.Fatal("migration lost identity or outbox")
 	}
 	raw, err = migrated.storage.read("chat-v2")

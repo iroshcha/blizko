@@ -9,6 +9,7 @@ import org.json.JSONObject;
 public final class ChatService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int incoming = -1;
+    private JSONObject previousUnread;
     private ChatApp app;
     private boolean destroyed=false,polling=false;
     private static final String RECEIVE="receiveEnabled";
@@ -16,17 +17,21 @@ public final class ChatService extends Service {
         if(!polling&&app.node!=null){polling=true;app.io.execute(()->{
             String raw=app.node.status();handler.post(()->{polling=false;if(destroyed)return;try {
             JSONObject s=new JSONObject(raw); int count=s.optInt("incoming");
-            if(incoming>=0&&count>incoming&&!app.activeScreen) {
+            JSONObject unread=s.optJSONObject("unread");String notifyPeer="";
+            if(previousUnread!=null&&unread!=null){java.util.Iterator<String> peers=unread.keys();while(peers.hasNext()){String peer=peers.next();if(unread.optInt(peer)>previousUnread.optInt(peer)&&(!app.activeScreen||!peer.equals(app.activePeer))){notifyPeer=peer;break;}}}
+            if(!notifyPeer.isEmpty()) {
                 getSystemService(NotificationManager.class).notify(2,new Notification.Builder(ChatService.this,"messages")
                     .setSmallIcon(ru.blizko.chat.R.drawable.ic_chat).setContentTitle("Близко")
-                    .setContentText("Новое сообщение").setContentIntent(open()).setAutoCancel(true).build());
+                    .setContentText("Новое сообщение").setContentIntent(openPeer(notifyPeer)).setAutoCancel(true).build());
             }
+            previousUnread=unread;
             incoming=count;
             getSystemService(NotificationManager.class).notify(1,notification(s.optString("status")));
         }catch(Exception ignored){} });});}
         handler.postDelayed(this,5000);
     }};
     private PendingIntent open(){return PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);}
+    private PendingIntent openPeer(String peer){return PendingIntent.getActivity(this,2,new Intent(this,MainActivity.class).putExtra("peer",peer).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP|Intent.FLAG_ACTIVITY_CLEAR_TOP),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);}
     private Notification notification(String status){
         PendingIntent stop=PendingIntent.getService(this,1,new Intent(this,ChatService.class).setAction("STOP"),PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this,"connection").setSmallIcon(R.drawable.ic_chat).setContentTitle("Близко · фоновый приём")

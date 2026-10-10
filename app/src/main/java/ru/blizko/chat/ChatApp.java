@@ -13,9 +13,11 @@ import org.json.*;
 public final class ChatApp extends Application {
     private static native void initializeIroh(android.content.Context context);
     public final ExecutorService io = Executors.newSingleThreadExecutor();
+    public final ExecutorService network=Executors.newFixedThreadPool(2);
     public volatile Node node;
     public volatile String error;
     public volatile boolean activeScreen;
+    public volatile String activePeer="",startupError;
     @Override public void onCreate() {
         super.onCreate();
         go.Seq.setContext(this);
@@ -27,8 +29,8 @@ public final class ChatApp extends Application {
         });
         io.execute(() -> {
             try { node = Mobile.newNode(new File(getNoBackupFilesDir(),"core").getPath(),StorageKey.load(this)); }
-            catch (Exception e) { error = "Не удалось открыть защищённое хранилище. Данные не удалены."; }
+            catch (Exception e) { startupError=error=e.getMessage()==null?"Не удалось открыть защищённое хранилище. Данные не удалены.":e.getMessage(); }
         });
     }
-    public void refreshInterfaces() { if(node!=null)node.networkChanged(); }
+    public void refreshInterfaces() { if(node!=null){node.setNetworkAvailable(getSystemService(android.net.ConnectivityManager.class).getActiveNetwork()!=null);node.networkChanged();} }
 }

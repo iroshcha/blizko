@@ -14,6 +14,15 @@ import (
 )
 
 const maxText = 4000
+const maxCipher = 12000
+
+func validPacket(e *envelope) bool {
+	if e == nil || len(e.Body) > maxCipher {
+		return false
+	}
+	raw, err := json.Marshal(e)
+	return err == nil && len(raw) <= 20000
+}
 
 type contact struct {
 	ID      string   `json:"id"`
@@ -94,7 +103,7 @@ func seal(p payload, peer contact, secret [32]byte) (envelope, error) {
 }
 func openEnvelope(e envelope, peer contact, secret [32]byte, self string) (payload, error) {
 	var p payload
-	if e.Version != 2 || e.From != peer.ID || len(e.Nonce) != 24 || len(e.Body) > 12000 {
+	if e.Version != 2 || e.From != peer.ID || len(e.Nonce) != 24 || len(e.Body) > maxCipher {
 		return p, errors.New("invalid envelope")
 	}
 	var nonce [24]byte

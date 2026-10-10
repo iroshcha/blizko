@@ -23,6 +23,11 @@ public final class MainActivity extends Activity {
     private ChatApp app;
     private LinearLayout root;
     private String peer="",last="",draft="";
+    private String query="",checkPeer="";
+    private final Map<String,String> drafts=new HashMap<>();
+    private final Map<String,Long> readOrders=new HashMap<>();
+    private boolean openingUnread=false,jumpLatest=false,sending=false,checking=false;
+    private Runnable saveDraft;
     private EditText compose;
     private TextView connectionStatus;
     private ScrollView historyScroll;
@@ -36,19 +41,20 @@ public final class MainActivity extends Activity {
         if(!availableUpdate.equals(updateInfo)){updateInfo=availableUpdate;pageRevision=-1;}
         if(app.node==null){if(root==null)render("");}
         else if(!polling){
-            polling=true;String target=peer;long cursor=before,known=pageRevision;
-            app.io.execute(()->{
+            polling=true;String target=peer,search=query;long cursor=before,known=pageRevision;boolean unread=openingUnread;
+            (search.isEmpty()?app.io:app.network).execute(()->{
                 String raw=null;
                 try{JSONObject status=new JSONObject(app.node.status());
-                    if(status.optLong("revision")!=known)raw=app.node.snapshotPage(target,cursor,50);
+                    if(status.optLong("revision")!=known)raw=unread?app.node.unreadPage(target,50):search.isEmpty()?app.node.snapshotPage(target,cursor,50):app.node.searchPage(target,search,cursor,50);
                 }catch(Exception ignored){}
                 String result=raw;
                 handler.post(()->{
                     polling=false;
-                    if(!active||!target.equals(peer)||cursor!=before)return;
+                    if(!active||!target.equals(peer)||cursor!=before||!search.equals(query))return;
                     if(result!=null)try{
                         JSONObject s=new JSONObject(result);last=result;pageRevision=s.optLong("revision");
-                        String key=target+":"+cursor+":"+s.optBoolean("enabled")+":"+s.opt("contacts")+":"+s.opt("messages")+":"+s.opt("deliveryIssues")+":"+s.opt("previews")+":"+AutoUpdates.prefs(MainActivity.this).getString("available","");
+                        if(unread){before=s.optLong("before");openingUnread=false;}
+                        String key=target+":"+before+":"+search+":"+s.optBoolean("enabled")+":"+s.opt("contacts")+":"+s.opt("messages")+":"+s.opt("deliveryIssues")+":"+s.opt("previews")+":"+s.opt("unread")+":"+s.opt("clear")+":"+s.opt("sending")+":"+s.opt("storageIssue")+":"+AutoUpdates.prefs(MainActivity.this).getString("available","");
                         if(root==null||!key.equals(contentKey)){contentKey=key;render(result);}
                         if(connectionStatus!=null)connectionStatus.setText((s.optBoolean("online")?"●  ":"○  ")+s.optString("status"));
                     }catch(Exception ignored){}
@@ -58,8 +64,10 @@ public final class MainActivity extends Activity {
         if(app.error!=null){String e=app.error;app.error=null;notice(e);}
         handler.postDelayed(this,1000);
     }};
-    @Override public void onCreate(Bundle state){super.onCreate(state);app=(ChatApp)getApplication();getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);if(state!=null){peer=state.getString("peer","");draft=state.getString("draft","");before=state.getLong("before",0);}}
-    @Override protected void onResume(){super.onResume();AutoUpdates.schedule(this);requestUpdateNotifications();active=true;app.activeScreen=true;handler.removeCallbacks(poll);handler.post(poll);}
+    @Override public void onCreate(Bundle state){super.onCreate(state);app=(ChatApp)getApplication();getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);if(state!=null){peer=state.getString("peer","");draft=state.getString("draft","");before=state.getLong("before",0);query=state.getString("query","");if(!peer.isEmpty())drafts.put(peer,draft);}else selectIntent(getIntent());}
+    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);selectIntent(intent);}
+    private void selectIntent(Intent intent){String target=intent.getStringExtra("peer");if(target!=null&&target.matches("[0-9a-f]{64}"))openPeer(target);}
+    @Override protected void onResume(){super.onResume();AutoUpdates.schedule(this);requestUpdateNotifications();active=true;app.activeScreen=true;app.activePeer=peer;handler.removeCallbacks(poll);handler.post(poll);}
     private void requestUpdateNotifications(){
         if(Build.VERSION.SDK_INT>=33&&AutoUpdates.enabled(this)&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED
             &&!AutoUpdates.prefs(this).getBoolean("permissionAsked",false)){
@@ -68,9 +76,12 @@ public final class MainActivity extends Activity {
         }
     }
     @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){super.onRequestPermissionsResult(code,permissions,results);AutoUpdates.showCached(this);}
-    @Override protected void onPause(){super.onPause();active=false;app.activeScreen=false;handler.removeCallbacks(poll);}
-    @Override protected void onSaveInstanceState(Bundle out){super.onSaveInstanceState(out);out.putString("peer",peer);out.putString("draft",compose==null?draft:compose.getText().toString());out.putLong("before",before);}
-    @Override public void onBackPressed(){if(!peer.isEmpty()){peer="";before=0;draft="";compose=null;refreshPage();}else super.onBackPressed();}
+    @Override protected void onPause(){flushDraft();super.onPause();active=false;app.activeScreen=false;app.activePeer="";handler.removeCallbacks(poll);}
+    @Override protected void onSaveInstanceState(Bundle out){super.onSaveInstanceState(out);out.putString("peer",peer);out.putString("draft",compose==null?draft:compose.getText().toString());out.putLong("before",before);out.putString("query",query);}
+    @Override public void onBackPressed(){if(!peer.isEmpty()){flushDraft();peer="";app.activePeer="";before=0;query="";draft="";compose=null;openingUnread=false;refreshPage();}else super.onBackPressed();}
+    private void openPeer(String id){flushDraft();peer=id;app.activePeer=active?id:"";before=0;query="";openingUnread=true;draft=drafts.getOrDefault(id,"");compose=null;refreshPage();}
+    private void flushDraft(){if(saveDraft!=null)handler.removeCallbacks(saveDraft);if(peer.isEmpty()||app.node==null)return;if(compose!=null)drafts.put(peer,compose.getText().toString());String target=peer,value=drafts.get(target);if(value==null)return;app.io.execute(()->{try{app.node.saveDraft(target,value);}catch(Exception e){app.error="Черновик не сохранён: "+e.getMessage();}});}
+    private void markRead(long through){if(!active||peer.isEmpty()||!query.isEmpty()||through<=readOrders.getOrDefault(peer,0L))return;String target=peer;readOrders.put(target,through);app.io.execute(()->{try{app.node.markRead(target,through);}catch(Exception e){handler.post(()->readOrders.remove(target));app.error="Не удалось сохранить отметку о прочтении.";}});}
     private void refreshPage(){pageRevision=-1;handler.removeCallbacks(poll);if(active)handler.post(poll);}
     private int dp(int n){return Math.round(n*getResources().getDisplayMetrics().density);}
     private GradientDrawable bg(int color,int radius){GradientDrawable g=new GradientDrawable();g.setColor(color);g.setCornerRadius(dp(radius));return g;}
@@ -84,7 +95,7 @@ public final class MainActivity extends Activity {
     interface Task{void run()throws Exception;}
     private void work(Task task){app.io.execute(()->{try{task.run();runOnUiThread(this::refreshPage);}catch(Exception e){runOnUiThread(()->notice(e.getMessage()==null?"Не удалось выполнить действие":e.getMessage()));}});}
     private void render(String raw){
-        String page=peer+":"+before;boolean samePage=page.equals(renderedPage);renderedPage=page;
+        String page=peer+":"+before+":"+query;boolean samePage=page.equals(renderedPage);renderedPage=page;
         boolean focused=samePage&&compose!=null&&compose.hasFocus();int selection=compose==null?0:compose.getSelectionStart();
         int offset=samePage&&historyScroll!=null?historyScroll.getScrollY():0;
         boolean atEnd=!samePage||historyScroll==null||historyScroll.getChildCount()==0||historyScroll.getChildAt(0).getHeight()-offset-historyScroll.getHeight()<dp(48);
@@ -94,12 +105,13 @@ public final class MainActivity extends Activity {
         root.setOnApplyWindowInsetsListener((v,i)->{root.setPadding(dp(22),dp(14)+i.getSystemWindowInsetTop(),dp(22),dp(12)+i.getSystemWindowInsetBottom());return i;});setContentView(root);
         try{
             JSONObject s=raw.isEmpty()?new JSONObject():new JSONObject(raw);
+            if(!peer.isEmpty()&&!drafts.containsKey(peer)){draft=s.optString("draft");drafts.put(peer,draft);}
             LinearLayout head=new LinearLayout(this);head.setGravity(Gravity.CENTER_VERTICAL);
-            TextView title=text(peer.isEmpty()?"Близко":"‹  "+peerName(s,peer),30,INK);title.setTypeface(null,Typeface.BOLD);head.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+            TextView title=text(peer.isEmpty()?"Близко":"‹  "+peerName(s,peer),30,INK);title.setMaxLines(1);title.setEllipsize(android.text.TextUtils.TruncateAt.END);title.setTypeface(null,Typeface.BOLD);head.addView(title,new LinearLayout.LayoutParams(0,-2,1));
             if(!peer.isEmpty())title.setOnClickListener(v->onBackPressed());
-            head.addView(button("ⓘ",()->notice("История и очередь сообщений хранятся только на телефонах.\n\niroh встроен: аккаунт и отдельный VPN не нужны. Если прямое соединение невозможно, зашифрованные данные проходят через ваш домашний сервер. Он должен быть включён и подключён к интернету.\n\nОба телефона должны быть в сети с включённым приёмом. Удаление приложения удалит историю.")));root.addView(head);
+            Button info=button("ⓘ",()->notice("История и очередь сообщений хранятся только на устройствах.\n\niroh встроен: аккаунт и отдельный VPN не нужны. Если прямое соединение невозможно, зашифрованные данные проходят через ваш домашний сервер. Он должен быть включён и подключён к интернету.\n\nОба устройства должны быть в сети с включённым приёмом. Удаление приложения удалит историю."));info.setContentDescription("Информация о приложении");head.addView(info);root.addView(head);
             root.addView(text("Личное остаётся у вас",14,MUTED));gap(root,14);
-            if(app.node==null){root.addView(text("Открываем защищённое хранилище…",16,MUTED));return;}
+            if(app.node==null){root.addView(text(app.startupError==null?"Открываем защищённое хранилище…":"Хранилище не открыто. "+app.startupError,16,MUTED));return;}
             LinearLayout card=column();card.setPadding(dp(14),dp(10),dp(14),dp(10));card.setBackground(bg(Color.WHITE,16));
             connectionStatus=text((s.optBoolean("online")?"●  ":"○  ")+s.optString("status","Подготовка…"),14,GREEN);card.addView(connectionStatus);
             if(peer.isEmpty()){
@@ -112,9 +124,10 @@ public final class MainActivity extends Activity {
                 card.addView(button("Настройки соединения",this::networkSetup));
             }
             root.addView(card);gap(root,12);
+            if(!s.optString("storageIssue").isEmpty())root.addView(text(s.optString("storageIssue"),14,MUTED));
             if(peer.isEmpty())home(s);else conversation(s);
             if(compose!=null&&focused){compose.requestFocus();compose.setSelection(Math.min(Math.max(selection,0),compose.length()));}
-            if(historyScroll!=null){ScrollView current=historyScroll;current.post(()->{if(before==0&&atEnd)current.fullScroll(View.FOCUS_DOWN);else current.scrollTo(0,offset);});}
+            if(historyScroll!=null){ScrollView current=historyScroll;boolean latest=jumpLatest||(before==0&&query.isEmpty()&&atEnd);jumpLatest=false;current.post(()->{if(current!=historyScroll)return;if(latest)current.fullScroll(View.FOCUS_DOWN);else current.scrollTo(0,samePage?offset:0);markVisible(current);});}
         }catch(Exception e){root.addView(text("Не удалось отобразить чат",16,MUTED));}
     }
     private String peerName(JSONObject s,String id){JSONArray a=s.optJSONArray("contacts");if(a!=null)for(int i=0;i<a.length();i++){JSONObject c=a.optJSONObject(i);if(c!=null&&id.equals(c.optString("id")))return c.optString("name");}return "Чат";}
@@ -130,35 +143,74 @@ public final class MainActivity extends Activity {
         if(contacts==null||contacts.length()==0){gap(list,40);list.addView(text("Ваш первый разговор",25,INK));list.addView(text("Включите приём, отправьте другу свой QR и добавьте его QR. Вход в аккаунт не нужен. Если обновились со старой версии, обменяйтесь новыми QR на обоих телефонах.",16,MUTED));return;}
         for(int i=0;i<contacts.length();i++){
             JSONObject c=contacts.getJSONObject(i);String id=c.getString("id");LinearLayout row=column();row.setPadding(dp(16),dp(12),dp(16),dp(12));row.setBackground(bg(Color.WHITE,16));
-            TextView name=text(c.getString("name"),19,INK);name.setTypeface(null,Typeface.BOLD);row.addView(name);
+            JSONObject unread=s.optJSONObject("unread");int unreadCount=unread==null?0:unread.optInt(id);TextView name=text(c.getString("name")+(unreadCount>0?" · "+unreadCount:""),19,INK);name.setTypeface(null,Typeface.BOLD);row.addView(name);
             String preview=c.optString("address").isEmpty()?"Нужен новый QR собеседника":"Начать разговор";if(previews!=null)preview=previews.optString(id,preview);
             TextView snippet=text(preview,14,MUTED);snippet.setMaxLines(1);snippet.setEllipsize(android.text.TextUtils.TruncateAt.END);row.addView(snippet);
-            row.setOnClickListener(v->{peer=id;before=0;draft="";compose=null;refreshPage();});list.addView(row);gap(list,8);
+            row.setOnClickListener(v->openPeer(id));list.addView(row);gap(list,8);
         }
     }
     private void conversation(JSONObject s)throws Exception{
         LinearLayout pages=new LinearLayout(this);
         Button older=button("Раньше",()->{JSONArray rows=s.optJSONArray("messages");if(rows!=null&&rows.length()>0){before=rows.optJSONObject(0).optLong("order");refreshPage();}});older.setEnabled(s.optBoolean("hasMore"));pages.addView(older,new LinearLayout.LayoutParams(0,-2,1));
-        Button recent=button("Последние",()->{before=0;refreshPage();});recent.setEnabled(before>0);pages.addView(recent,new LinearLayout.LayoutParams(0,-2,1));
-        pages.addView(button("Очистить",()->new AlertDialog.Builder(this).setTitle("Очистить историю?").setMessage("Будут удалены тексты доставленных сообщений на этом устройстве. Ожидающие отправки сообщения сохранятся.").setNegativeButton("Отмена",null).setPositiveButton("Очистить",(d,w)->{String target=peer;work(()->app.node.clearHistory(target));}).show()),new LinearLayout.LayoutParams(0,-2,1));root.addView(pages);
-        root.addView(button("Проверить связь с собеседником",()->{String target=peer;work(()->{String result=app.node.checkContact(target);runOnUiThread(()->notice(result));});}));
+        JSONObject unread=s.optJSONObject("unread");int unreadCount=unread==null?0:unread.optInt(peer);
+        Button recent=button(unreadCount>0?"Новые · "+unreadCount:"Последние",()->{before=0;query="";openingUnread=false;jumpLatest=true;contentKey="";refreshPage();});recent.setEnabled(before>0||!query.isEmpty()||unreadCount>0);pages.addView(recent,new LinearLayout.LayoutParams(0,-2,1));
+        pages.addView(button("Найти",this::searchMessages),new LinearLayout.LayoutParams(0,-2,1));root.addView(pages);
+        if(!query.isEmpty())root.addView(button("Поиск: "+query+" · Сбросить",()->{query="";before=0;refreshPage();}));
+        JSONObject clear=s.optJSONObject("clear");boolean clearing=clear!=null&&clear.optBoolean("running");
+        LinearLayout tools=new LinearLayout(this);
+        tools.addView(button(clearing?"Отменить очистку":"Очистить",()->{if(clearing){work(()->app.node.cancelClearHistory());return;}new AlertDialog.Builder(this).setTitle("Очистить историю?").setMessage("Будут удалены тексты доставленных и отменённых сообщений на этом устройстве. Ожидающие отправки сообщения сохранятся.").setNegativeButton("Отмена",null).setPositiveButton("Очистить",(d,w)->{String target=peer;work(()->app.node.beginClearHistory(target));}).show();}),new LinearLayout.LayoutParams(0,-2,1));
+        tools.addView(button(checking?"Отменить проверку":"Проверить связь",this::checkConnection),new LinearLayout.LayoutParams(0,-2,1));root.addView(tools);
+        if(clear!=null&&peer.equals(clear.optString("peer"))){if(clearing)root.addView(text("Очистка: "+clear.optInt("done")+" / "+clear.optInt("total"),13,MUTED));else if(!clear.optString("error").isEmpty())root.addView(text("Очистка прервана: "+clear.optString("error"),13,MUTED));}
+        if(checking)root.addView(text("Проверяем ответ собеседника… Можно продолжать пользоваться чатом.",13,MUTED));
         JSONObject issues=s.optJSONObject("deliveryIssues");String issue=issues==null?"":issues.optString(peer);
         if(!issue.isEmpty())root.addView(text(issue,13,MUTED));
         ScrollView scroll=new ScrollView(this);LinearLayout bubbles=column();scroll.addView(bubbles);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         historyScroll=scroll;
-        JSONArray messages=s.optJSONArray("messages");int count=0;
+        scroll.setOnScrollChangeListener((v,x,y,oldX,oldY)->markVisible(scroll));
+        JSONArray messages=s.optJSONArray("messages");int count=0;String previousDay="";
+        JSONObject firstUnread=s.optJSONObject("firstUnread");long first=firstUnread==null?0:firstUnread.optLong(peer);
         if(messages!=null)for(int i=0;i<messages.length();i++){
             JSONObject m=messages.getJSONObject(i);if(!peer.equals(m.getString("peer")))continue;count++;
+            String day=new SimpleDateFormat("d MMMM yyyy",Locale.getDefault()).format(new Date(m.getLong("time")));
+            if(!day.equals(previousDay)){TextView separator=text(day,12,MUTED);separator.setGravity(Gravity.CENTER);bubbles.addView(separator);previousDay=day;}
+            if(first>0&&m.optLong("order")==first){TextView label=text("Непрочитанные",13,GREEN);label.setGravity(Gravity.CENTER);bubbles.addView(label);}
             boolean out=m.getBoolean("out");LinearLayout bubble=column();bubble.setPadding(dp(14),dp(9),dp(14),dp(9));bubble.setBackground(bg(out?0xFFDCEEE4:Color.WHITE,16));
+            bubble.setTag(m.optLong("order"));bubble.setOnLongClickListener(v->{messageActions(m);return true;});
             bubble.addView(text(m.getString("text"),16,INK));
             String meta=new SimpleDateFormat("HH:mm",Locale.getDefault()).format(new Date(m.getLong("time")));
-            if(out)meta+=" · "+(m.getBoolean("delivered")?"Доставлено":"В очереди · не доставлено");bubble.addView(text(meta,11,MUTED));
+            JSONObject attempts=s.optJSONObject("sending");
+            if(out)meta+=" · "+(m.getBoolean("delivered")?"Доставлено":m.optBoolean("cancelled")?"Отменено":!m.optString("failure").isEmpty()?"Не отправлено":attempts!=null&&m.optString("id").equals(attempts.optString(peer))?"Отправляем…":!s.optBoolean("enabled")?"Ожидает включения приёма":"В очереди · не доставлено");bubble.addView(text(meta,11,MUTED));
+            if(!m.optString("failure").isEmpty())bubble.addView(text(m.optString("failure"),12,MUTED));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.gravity=out?Gravity.END:Gravity.START;p.setMargins(out?dp(26):0,dp(4),out?0:dp(26),dp(4));bubbles.addView(bubble,p);
         }
         if(count==0)bubbles.addView(text("Сообщения видны только вам и собеседнику. Добавьте QR-коды контактов на обоих телефонах.",15,MUTED));
         gap(root,8);
-        LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.BOTTOM);compose=input("Сообщение…");compose.setText(draft);compose.setMaxLines(4);compose.setBackground(bg(Color.WHITE,16));line.addView(compose,new LinearLayout.LayoutParams(0,-2,1));
-        line.addView(button("↑",()->{String content=compose.getText().toString();String target=peer;work(()->{app.node.send(target,content);runOnUiThread(()->{if(target.equals(peer)&&compose!=null&&content.contentEquals(compose.getText())){draft="";compose.setText("");}});});}));root.addView(line);
+        LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.BOTTOM);compose=input("Сообщение…");compose.setFilters(new android.text.InputFilter[]{TextLimits.message()});compose.setText(draft);compose.setMaxLines(4);compose.setBackground(bg(Color.WHITE,16));line.addView(compose,new LinearLayout.LayoutParams(0,-2,1));
+        compose.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence text,int a,int b,int c){draft=text.toString();drafts.put(peer,draft);if(saveDraft!=null)handler.removeCallbacks(saveDraft);saveDraft=MainActivity.this::flushDraft;handler.postDelayed(saveDraft,500);}public void afterTextChanged(android.text.Editable value){}});
+        Button send=button("↑",this::sendMessage);send.setEnabled(!sending);send.setContentDescription("Отправить сообщение");line.addView(send);root.addView(line);
+    }
+    private void sendMessage(){
+        if(sending||compose==null||compose.getText().toString().trim().isEmpty())return;sending=true;String content=compose.getText().toString(),target=peer;flushDraft();
+        app.io.execute(()->{try{app.node.send(target,content);try{app.node.clearSentDraft(target,content);}catch(Exception e){app.error="Сообщение в очереди, но сохранённый черновик не очищен.";}
+            handler.post(()->{sending=false;if(content.equals(drafts.get(target)))drafts.put(target,"");if(target.equals(peer)&&compose!=null&&content.contentEquals(compose.getText())){draft="";compose.setText("");}contentKey="";refreshPage();});
+        }catch(Exception e){handler.post(()->{sending=false;notice(e.getMessage());contentKey="";refreshPage();});}});
+    }
+    AlertDialog searchMessages(){EditText value=input("Текст сообщения");value.setText(query);value.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(200)});return new AlertDialog.Builder(this).setTitle("Поиск в переписке").setView(value).setNegativeButton("Отмена",null).setPositiveButton("Найти",(d,w)->{query=value.getText().toString().trim();before=0;openingUnread=false;refreshPage();}).show();}
+    private void checkConnection(){
+        if(checking){String target=checkPeer;work(()->app.node.cancelContactCheck(target));return;}
+        checking=true;checkPeer=peer;String target=peer;contentKey="";refreshPage();app.network.execute(()->{try{String result=app.node.checkContact(target);handler.post(()->{if(active)notice(result);});}catch(Exception e){handler.post(()->{if(active)notice(e.getMessage());});}finally{handler.post(()->{checking=false;contentKey="";refreshPage();});}});
+    }
+    private void markVisible(ScrollView scroll){
+        if(scroll!=historyScroll||scroll.getChildCount()==0||!active||!query.isEmpty())return;LinearLayout rows=(LinearLayout)scroll.getChildAt(0);long through=0;int top=scroll.getScrollY(),bottom=top+scroll.getHeight();
+        for(int i=0;i<rows.getChildCount();i++){View row=rows.getChildAt(i);if(row.getTag() instanceof Long&&row.getTop()<bottom&&row.getBottom()>top)through=Math.max(through,(Long)row.getTag());}markRead(through);
+    }
+    private void messageActions(JSONObject message){
+        List<String> choices=new ArrayList<>();choices.add("Копировать текст");boolean pending=message.optBoolean("out")&&!message.optBoolean("delivered");if(pending){choices.add("Повторить отправку");if(!message.optBoolean("cancelled"))choices.add("Отменить отправку");}
+        new AlertDialog.Builder(this).setTitle("Сообщение").setItems(choices.toArray(new String[0]),(d,which)->{
+            if(which==0)getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Сообщение",message.optString("text")));
+            else if(which==1)work(()->app.node.retryMessage(message.optString("peer"),message.optString("id")));
+            else new AlertDialog.Builder(this).setTitle("Отменить отправку?").setMessage("Повторные попытки прекратятся. Если собеседник уже получил сообщение, отмена не удалит его у него.").setNegativeButton("Назад",null).setPositiveButton("Отменить отправку",(dialog,button)->work(()->app.node.cancelMessage(message.optString("peer"),message.optString("id")))).show();
+        }).setNegativeButton("Закрыть",null).show();
     }
     private void shareCode(){work(()->{
         String code=app.node.myCode();

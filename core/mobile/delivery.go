@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"context"
 	"errors"
 	"net/http"
 )
@@ -36,7 +37,7 @@ func (n *Node) recordDeliveryIssue(peer, issue string) {
 	}
 	pending := false
 	for _, m := range n.state.Messages {
-		if m.Out && m.Peer == peer && !m.Delivered {
+		if m.Out && m.Peer == peer && !m.Delivered && !m.Cancelled && m.Failure == "" {
 			pending = true
 			break
 		}
@@ -46,8 +47,87 @@ func (n *Node) recordDeliveryIssue(peer, issue string) {
 		delete(n.deliveryIssues, peer)
 	} else if issue != "" {
 		n.deliveryIssues[peer] = issue
+	} else {
+		delete(n.deliveryIssues, peer)
 	}
 	if previous != n.deliveryIssues[peer] {
 		n.revision++
 	}
+}
+
+type deliveryAttempt struct {
+	cancel   context.CancelFunc
+	peer, id string
+}
+
+func (n *Node) CancelMessage(peer, id string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	index, ok := n.messageIndexes[recordID(message{Peer: peer, ID: id, Out: true})]
+	if !ok {
+		return errors.New("Сообщение не найдено")
+	}
+	m := n.state.Messages[index]
+	if m.Delivered {
+		return errors.New("Сообщение уже доставлено")
+	}
+	if m.Cancelled {
+		return nil
+	}
+	m.Cancelled = true
+	m.Failure = ""
+	if err := n.storeMessage(m, index); err != nil {
+		return err
+	}
+	if attempt := n.inflight[recordID(m)]; attempt != nil {
+		attempt.cancel()
+	}
+	delete(n.retry, peer)
+	delete(n.deliveryIssues, peer)
+	select {
+	case n.wake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+func (n *Node) RetryMessage(peer, id string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	index, ok := n.messageIndexes[recordID(message{Peer: peer, ID: id, Out: true})]
+	if !ok {
+		return errors.New("Сообщение не найдено")
+	}
+	m := n.state.Messages[index]
+	if m.Delivered {
+		return errors.New("Сообщение уже доставлено")
+	}
+	if !validPacket(m.Packet) {
+		return errors.New("Пакет слишком велик. Отмените сообщение и отправьте сокращённый текст.")
+	}
+	m.Cancelled = false
+	m.Failure = ""
+	if err := n.storeMessage(m, index); err != nil {
+		return err
+	}
+	delete(n.retry, peer)
+	delete(n.deliveryIssues, peer)
+	select {
+	case n.wake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+func (n *Node) failMessage(m message, reason string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	index, exists := n.messageIndexes[recordID(m)]
+	if !exists {
+		return
+	}
+	current := n.state.Messages[index]
+	if current.Delivered || current.Cancelled {
+		return
+	}
+	current.Failure = reason
+	_ = n.storeMessage(current, index)
 }

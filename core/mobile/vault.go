@@ -14,9 +14,12 @@ import (
 )
 
 type vault struct {
-	dir  string
-	aead cipher.AEAD
-	mu   sync.Mutex
+	dir         string
+	aead        cipher.AEAD
+	mu          sync.Mutex
+	recordMu    sync.Mutex
+	integrity   *recordIntegrity
+	recordFault func(string) error // Fault injection in storage regression tests.
 }
 
 func newVault(dir string, key []byte) (*vault, error) {

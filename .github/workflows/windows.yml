@@ -41,6 +41,9 @@ jobs:
           $test = Start-Process ./dist/windows/Blizko.exe -ArgumentList @('--self-test', "$env:RUNNER_TEMP\blizko-ui") -WindowStyle Hidden -Wait -PassThru
           Get-Content "$env:RUNNER_TEMP\blizko-ui\self-test.txt"
           if ($test.ExitCode -ne 0) { throw 'Windows interface checks failed' }
+      - name: Test delayed send and concurrent diagnostics
+        shell: pwsh
+        run: ./scripts/test-windows-interactions.ps1 -OutputDirectory "$env:RUNNER_TEMP\blizko-interactions"
       - name: Test real Windows relay delivery and restart
         shell: pwsh
         run: ./scripts/test-windows-local.ps1 -TestDirectory "$env:RUNNER_TEMP\blizko-local-network"
@@ -57,6 +60,7 @@ jobs:
           path: |
             ${{ runner.temp }}/blizko-ui/*.txt
             ${{ runner.temp }}/blizko-ui/*preview.png
+            ${{ runner.temp }}/blizko-interactions/*.txt
             ${{ runner.temp }}/blizko-local-network/*.txt
             ${{ runner.temp }}/blizko-network/*.txt
       - name: Package Windows

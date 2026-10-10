@@ -162,6 +162,9 @@ func (n *Node) stopLocked() {
 	n.status = "Приём выключен"
 	n.revision++
 	n.relay = ""
+	for _, probe := range n.probes {
+		probe.cancel()
+	}
 	n.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -184,7 +187,7 @@ func (n *Node) runIroh(ctx context.Context, link *irohLink, gen int) {
 			return
 		}
 		previousStatus, previousOnline, previousRelay := n.status, n.online, n.relay
-		n.online = err == nil && status.Online
+		n.online = err == nil && status.Online && (!n.networkKnown || n.networkAvailable)
 		n.relay = status.Relay
 		if n.online {
 			n.status = "Подключено · iroh"
@@ -192,7 +195,11 @@ func (n *Node) runIroh(ctx context.Context, link *irohLink, gen int) {
 				n.status += " · через ретранслятор"
 			}
 		} else {
-			n.status = "Ожидание сети iroh…"
+			if n.networkKnown && !n.networkAvailable {
+				n.status = "Нет сетевого подключения"
+			} else {
+				n.status = "Связь с домашним сервером не установлена"
+			}
 		}
 		if previousStatus != n.status || previousOnline != n.online || previousRelay != n.relay {
 			n.revision++
@@ -322,7 +329,7 @@ func (n *Node) SetRelayURL(raw string) error {
 		n.mu.Unlock()
 		return nil
 	}
-	state := n.clone()
+	state := n.cloneMetadata()
 	state.RelayURL = raw
 	enabled := n.enabled
 	err = n.commit(state)
@@ -340,7 +347,7 @@ func (n *Node) SetRelayOnly(value bool) error {
 	n.life.Lock()
 	defer n.life.Unlock()
 	n.mu.Lock()
-	state := n.clone()
+	state := n.cloneMetadata()
 	enabled := n.enabled
 	state.RelayOnly = value
 	err := n.commit(state)
@@ -367,10 +374,32 @@ func (n *Node) NetworkChanged() {
 		}
 	}
 }
+func (n *Node) SetNetworkAvailable(value bool) {
+	n.mu.Lock()
+	changed := !n.networkKnown || n.networkAvailable != value
+	n.networkKnown = true
+	n.networkAvailable = value
+	if changed {
+		n.revision++
+	}
+	n.mu.Unlock()
+	if changed {
+		n.NetworkChanged()
+	}
+}
+func (n *Node) CancelContactCheck(id string) {
+	n.mu.Lock()
+	attempt := n.probes[id]
+	n.mu.Unlock()
+	if attempt != nil {
+		attempt.cancel()
+	}
+}
 func (n *Node) CheckContact(id string) (string, error) {
 	n.mu.Lock()
 	peer, exists := n.peer(id)
 	link := n.link
+	known, available, online, server := n.networkKnown, n.networkAvailable, n.online, n.state.RelayURL
 	n.mu.Unlock()
 	if !exists {
 		return "", errors.New("Контакт не найден")
@@ -381,9 +410,43 @@ func (n *Node) CheckContact(id string) (string, error) {
 	if link == nil {
 		return "Включите приём на этом устройстве.", nil
 	}
-	result, err := link.exchange(peer.Address, `{"probe":true}`)
+	if known && !available {
+		return "На этом устройстве нет сетевого подключения. Подключитесь к Wi-Fi или мобильной сети.", nil
+	}
+	if server == "" {
+		server = homeRelayURL
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	attempt := &deliveryAttempt{cancel: cancel}
+	n.mu.Lock()
+	if n.probes == nil {
+		n.probes = map[string]*deliveryAttempt{}
+	}
+	if previous := n.probes[id]; previous != nil {
+		previous.cancel()
+	}
+	n.probes[id] = attempt
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		if n.probes[id] == attempt {
+			delete(n.probes, id)
+		}
+		n.mu.Unlock()
+	}()
+	result, err := link.exchangeContext(ctx, peer.Address, `{"probe":true}`)
 	if err != nil {
-		return "Собеседник не отвечает. Включите приём на обоих устройствах и проверьте интернет. Для диагностики попробуйте режим «Только через ретранслятор».", nil
+		if ctx.Err() == context.Canceled {
+			return "Проверка отменена.", nil
+		}
+		n.mu.Lock()
+		online = n.online
+		n.mu.Unlock()
+		if !online {
+			return "Связь с домашним сервером не установлена: " + server + "\nПроверьте, что серверный компьютер и туннель включены. Собеседник также не ответил; причина на его устройстве неизвестна.", nil
+		}
+		return "Связь с домашним сервером есть. Собеседник не отвечает: у него может быть выключен приём или отсутствовать сеть. Проверьте приём на обоих устройствах и наличие ваших QR в обе стороны.", nil
 	}
 	if result.Status != 200 {
 		return "Соединение iroh установлено, но у собеседника нет вашего нового QR. Обменяйтесь кодами в обе стороны.", nil
