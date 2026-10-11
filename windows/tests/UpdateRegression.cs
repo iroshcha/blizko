@@ -56,6 +56,11 @@ class UpdateRegression {
         Console.WriteLine("PASS: process interruption leaves recoverable journal and restores old files");
         string installed=Target("installed");UpdatePackage.Install(valid,release,installed);Assert(UpdatePackage.Hash(Path.Combine(installed,"Blizko.exe"))==UpdatePackage.Hash(Path.Combine(root,"new.exe")),"new exe not installed");Data(installed);Reject(()=>UpdatePackage.Install(valid,release,installed),"same-version reinstall");
         Console.WriteLine("PASS: complete installation, unchanged history and downgrade/reinstall guard");
+        string modern=Zip("modern");using(var archive=ZipFile.Open(modern,ZipArchiveMode.Update)){archive.GetEntry("blizko_iroh.dll").Delete();archive.GetEntry("IROH_NOTICES.txt").Delete();}
+        string modernTarget=Target("modern-installed");UpdatePackage.Install(modern,Release(modern),modernTarget);Data(modernTarget);
+        foreach(int fail in new[]{0,5,9}){string target=Target("modern-rollback-"+fail);Reject(()=>UpdatePackage.Install(modern,Release(modern),target,i=>{if(i==fail)throw new IOException("Injected modern failure");}),"modern rollback");Old(target);}
+        string partial=Zip("partial");using(var archive=ZipFile.Open(partial,ZipArchiveMode.Update)){archive.GetEntry("IROH_NOTICES.txt").Delete();}Reject(()=>UpdatePackage.Extract(partial,Path.Combine(root,"partial"),Release(partial)),"partial legacy files");
+        Console.WriteLine("PASS: modern 10-file update, rollback and partial legacy archive rejection");
         // Exercise the real updater program with an isolated parent and restart fixture.
         string end=Target("end-to-end"),work=Path.Combine(root,"handoff");Directory.CreateDirectory(work);
         foreach(string file in new[]{"Blizko.Updater.exe","Blizko.Updater.exe.config"})File.Copy(Path.Combine(root,file),Path.Combine(work,file));

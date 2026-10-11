@@ -11,13 +11,14 @@ import org.json.JSONObject;
 
 /** Exercises the actual activity button, foreground service and embedded Go runtime. */
 public class ReceiveStartupTest extends Instrumentation {
-    @Override public void onCreate(Bundle arguments) { super.onCreate(arguments); start(); }
+    protected String testServer="http://127.0.0.1:3340";
+    @Override public void onCreate(Bundle arguments) { if(arguments!=null&&arguments.getString("server")!=null)testServer=arguments.getString("server"); super.onCreate(arguments); start(); }
 
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
             testReceiveStartsWithoutClosingActivity();
-            result.putString("stream", "OK: receive starts and connects to iroh without closing the activity");
+            result.putString("stream", "OK: receive starts and connects to server without closing the activity");
             finish(Activity.RESULT_OK, result);
         } catch (Throwable failure) {
             result.putString("stream", "FAIL: " + failure.getClass().getSimpleName() + ": " + failure.getMessage());
@@ -47,6 +48,7 @@ public class ReceiveStartupTest extends Instrumentation {
         long deadline = System.currentTimeMillis() + 30000;
         while (app.node == null && System.currentTimeMillis() < deadline) Thread.sleep(200);
         check(app.node != null, "Shared core did not initialize");
+        app.node.setRelayURL(testServer);
         waitForIdleSync();
         Thread.sleep(1500);
         runOnMainSync(() -> {
@@ -63,9 +65,9 @@ public class ReceiveStartupTest extends Instrumentation {
         }
         check(!activity.isFinishing(), "Activity closed during receive startup");
         check(state.optBoolean("enabled"), "Receiver is disabled: " + state.optString("status"));
-        check("iroh".equals(state.optString("transport")), "Wrong transport");
+        check("server".equals(state.optString("transport")), "Wrong transport");
         check(state.optBoolean("online"),
-            "No iroh connection: " + state.optString("status"));
+            "No server connection: " + state.optString("status"));
         runOnMainSync(() -> {
             activity.stopService(new Intent(activity, ChatService.class));
             activity.finish();

@@ -19,8 +19,10 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
     @Override public void onCreate(Bundle args){arguments=args;super.onCreate(args);}
     private void check(boolean value,String reason){if(!value)throw new AssertionError(reason);}
     @Override public void onStart(){
+        if(arguments!=null&&"true".equals(arguments.getString("diagnostics"))){new DiagnosticTest(this).run(arguments);return;}
         Bundle result=new Bundle();
         try{
+            if(arguments!=null&&"true".equals(arguments.getString("transportOnly"))){ServerDeliveryCheck.run(getTargetContext(),testServer);result.putString("stream","PASS: Android encrypted bidirectional server delivery, offline queue and contact probe");finish(Activity.RESULT_OK,result);return;}
             if(arguments!=null&&"true".equals(arguments.getString("stopOnly"))){
                 getTargetContext().startService(new Intent(getTargetContext(),ChatService.class).setAction("STOP"));
                 long until=System.currentTimeMillis()+10000;
@@ -30,8 +32,8 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
                 check(!new JSONObject(app.node.status()).getBoolean("enabled"),"Explicit stop left node enabled");
                 result.putString("stream","OK: explicit stop disables receive and automatic restart");finish(Activity.RESULT_OK,result);return;
             }
-            testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testConversationTools();testApk();testAutomaticUpdates();IrohDeliveryCheck.run(getTargetContext());
-            result.putString("stream","OK: repeated startup, paged history, per-contact drafts, full history search, message cancel and retry, QR, APK validation, persistent update scheduling and deduplicated notifications, real iroh automatic/relay delivery and offline queue");finish(Activity.RESULT_OK,result);
+            testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testConversationTools();testApk();testAutomaticUpdates();ServerDeliveryCheck.run(getTargetContext(),testServer);
+            result.putString("stream","OK: repeated startup, paged history, per-contact drafts, full history search, message cancel and retry, QR, APK validation, persistent update scheduling and deduplicated notifications, real server delivery and offline queue");finish(Activity.RESULT_OK,result);
         }
         catch(Throwable failure){result.putString("stream","FAIL: "+failure.getClass().getSimpleName()+": "+failure.getMessage());finish(Activity.RESULT_CANCELED,result);}
     }

@@ -17,6 +17,8 @@ public final class ChatService extends Service {
         if(!polling&&app.node!=null){polling=true;app.io.execute(()->{
             String raw=app.node.status();handler.post(()->{polling=false;if(destroyed)return;try {
             JSONObject s=new JSONObject(raw); int count=s.optInt("incoming");
+            Diagnostics.sample(ChatService.this,s);
+            if(incoming>=0&&count>incoming)Diagnostics.record(ChatService.this,"message_received");
             JSONObject unread=s.optJSONObject("unread");String notifyPeer="";
             if(previousUnread!=null&&unread!=null){java.util.Iterator<String> peers=unread.keys();while(peers.hasNext()){String peer=peers.next();if(unread.optInt(peer)>previousUnread.optInt(peer)&&(!app.activeScreen||!peer.equals(app.activePeer))){notifyPeer=peer;break;}}}
             if(!notifyPeer.isEmpty()) {
@@ -44,15 +46,17 @@ public final class ChatService extends Service {
     }
     @Override public int onStartCommand(Intent intent,int flags,int id){
         android.content.SharedPreferences preferences=getSharedPreferences("connection",MODE_PRIVATE);
-        if(intent!=null&&"STOP".equals(intent.getAction())){preferences.edit().putBoolean(RECEIVE,false).commit();stopSelf();return START_NOT_STICKY;}
+        if(intent!=null&&"STOP".equals(intent.getAction())){preferences.edit().putBoolean(RECEIVE,false).commit();Diagnostics.service(this,"service_stop",false);stopSelf();return START_NOT_STICKY;}
         if(intent==null&&!preferences.getBoolean(RECEIVE,false)){stopSelf();return START_NOT_STICKY;}
         if(intent!=null)preferences.edit().putBoolean(RECEIVE,true).commit();
         if(Build.VERSION.SDK_INT>=34)startForeground(1,notification("Подключение…"),ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else startForeground(1,notification("Подключение…"));
+        Diagnostics.service(this,intent==null?"service_restart":"service_start",true);
         app.io.execute(()->{try{if(app.node==null)throw new Exception();app.refreshInterfaces();app.node.start();}
-            catch(Exception e){app.error="Не удалось включить приём. Попробуйте подключиться заново.";stopSelf();}});
+            catch(Exception e){Diagnostics.record(this,"start_failed");app.error="Не удалось включить приём. Попробуйте подключиться заново.";stopSelf();}});
         handler.removeCallbacks(watch);handler.post(watch);return START_STICKY;
     }
-    @Override public void onDestroy(){destroyed=true;handler.removeCallbacks(watch);app.io.execute(()->{if(app.node!=null)app.node.stop();});super.onDestroy();}
+    @Override public void onTaskRemoved(Intent rootIntent){Diagnostics.record(this,"task_removed");super.onTaskRemoved(rootIntent);}
+    @Override public void onDestroy(){Diagnostics.service(this,"service_destroy",false);destroyed=true;handler.removeCallbacks(watch);app.io.execute(()->{if(app.node!=null)app.node.stop();});super.onDestroy();}
     @Override public IBinder onBind(Intent intent){return null;}
 }

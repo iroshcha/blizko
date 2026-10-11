@@ -5,11 +5,8 @@ try {
     & go test ./mobile
     if ($LASTEXITCODE -ne 0) { throw 'Core tests failed' }
     New-Item -ItemType Directory -Force "$taskRoot\app\libs" | Out-Null
-    foreach ($abi in @('aarch64-linux-android','x86_64-linux-android')) {
-        if (-not (Test-Path "$taskRoot\core\iroh\lib\$abi\libblizko_iroh.a")) { throw 'Build/download the iroh-native workflow libraries first' }
-    }
-    & gomobile bind '-target=android/arm64,android/amd64' -tags=iroh -androidapi 26 '-ldflags=-s -w' -o "$taskRoot\app\libs\mobile.aar" ./mobile
-    if ($LASTEXITCODE -ne 0) { throw 'iroh AAR build failed' }
+    & gomobile bind '-target=android/arm64,android/amd64' -androidapi 26 '-ldflags=-s -w' -o "$taskRoot\app\libs\mobile.aar" ./mobile
+    if ($LASTEXITCODE -ne 0) { throw 'Go AAR build failed' }
 } finally { Pop-Location }
 Set-Content -LiteralPath "$taskRoot\local.properties" -Value "sdk.dir=$($env:ANDROID_HOME.Replace('\','/'))" -Encoding utf8
 Push-Location $taskRoot

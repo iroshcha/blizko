@@ -26,6 +26,8 @@ namespace Blizko {
         internal const long MaxDownload = 150L * 1024 * 1024;
         internal const string JournalName = ".blizko-update-pending.json";
         internal static readonly string[] Files = { "Blizko.Engine.exe", "blizko_iroh.dll", "zxing.dll", "Blizko.Updater.exe", "Blizko.Updater.exe.config", "Blizko.exe.config", "Blizko.ico", "README.txt", "THIRD_PARTY_NOTICES.txt", "IROH_NOTICES.txt", "ZXING_NET_NOTICE.txt", "Blizko.exe" };
+        internal static readonly string[] ModernFiles = Files.Where(f => f != "blizko_iroh.dll" && f != "IROH_NOTICES.txt").ToArray();
+        private static bool KnownSet(IEnumerable<string> names) { return names.SequenceEqual(Files) || names.SequenceEqual(ModernFiles); }
         internal static JavaScriptSerializer Json() { return new JavaScriptSerializer { MaxJsonLength = 65536 }; }
         internal static Version CurrentVersion { get { return typeof(UpdatePackage).Assembly.GetName().Version; } }
         internal static UpdateRelease Verify(string envelope) { return Verify(envelope, UpdateKey.PublicXml); }
@@ -94,7 +96,9 @@ namespace Blizko {
             VerifyArchive(zip, release); NoLinks(stage); Directory.CreateDirectory(stage);
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); long total = 0;
             using (var input = ZipFile.OpenRead(zip)) {
-                if (input.Entries.Count != Files.Length) throw new InvalidDataException("Архив содержит неполный или неизвестный набор файлов.");
+                var names = new HashSet<string>(input.Entries.Select(e => e.FullName), StringComparer.Ordinal);
+                string[] expected = names.Contains("blizko_iroh.dll") ? Files : ModernFiles;
+                if (input.Entries.Count != expected.Length || !names.SetEquals(expected)) throw new InvalidDataException("Архив содержит неполный или неизвестный набор файлов.");
                 foreach (var entry in input.Entries) {
                     if (!Files.Contains(entry.FullName, StringComparer.Ordinal) || !seen.Add(entry.FullName) || (entry.ExternalAttributes & (int)FileAttributes.ReparsePoint) != 0 || ((entry.ExternalAttributes >> 16) & 0xf000) == 0xa000) throw new InvalidDataException("Небезопасный путь в архиве обновления.");
                     total += entry.Length;
@@ -109,7 +113,7 @@ namespace Blizko {
             }
             if (Version.Parse(FileVersionInfo.GetVersionInfo(Path.Combine(stage, "Blizko.exe")).FileVersion) != release.Version) throw new InvalidDataException("Версия приложения не совпадает с описанием обновления.");
         }
-        // The updater holds the application mutex. Only these twelve program files
+        // The updater holds the application mutex. Only the exact modern or legacy files
         // can be replaced; the encrypted data directory is never included.
         internal static void Install(string zip, UpdateRelease release, string target, Action<int> fault = null) {
             target = Target(target); CheckWritable(target);
@@ -123,16 +127,17 @@ namespace Blizko {
             try {
                 Extract(zip, stage, release);
                 var journal = new UpdateJournal { format = 1, workspace = workName, files = new List<UpdateFile>() };
-                foreach (string name in Files) {
+                string[] files = File.Exists(Path.Combine(stage,"blizko_iroh.dll")) ? Files : ModernFiles;
+                foreach (string name in files) {
                     string destination = Path.Combine(target, name); NoLinks(destination);
                     string oldHash = null;
                     if (File.Exists(destination)) { CopyDurable(destination, Path.Combine(backup, name)); oldHash = Hash(Path.Combine(backup, name)); }
                     journal.files.Add(new UpdateFile { name = name, oldHash = oldHash, newHash = Hash(Path.Combine(stage, name)) });
                 }
                 WriteAtomic(Path.Combine(target, JournalName), Encoding.UTF8.GetBytes(Json().Serialize(journal)));
-                for (int i = 0; i < Files.Length; i++) {
-                    string destination = Path.Combine(target, Files[i]); NoLinks(destination);
-                    if (File.Exists(destination)) File.Replace(Path.Combine(stage, Files[i]), destination, null); else File.Move(Path.Combine(stage, Files[i]), destination);
+                for (int i = 0; i < files.Length; i++) {
+                    string destination = Path.Combine(target, files[i]); NoLinks(destination);
+                    if (File.Exists(destination)) File.Replace(Path.Combine(stage, files[i]), destination, null); else File.Move(Path.Combine(stage, files[i]), destination);
                     if (fault != null) fault(i);
                 }
                 File.Delete(Path.Combine(target, JournalName)); committed = true;
@@ -148,7 +153,7 @@ namespace Blizko {
             if (!File.Exists(marker)) return;
             if (new FileInfo(marker).Length > 65536) throw new InvalidDataException("Повреждён журнал обновления.");
             var journal = Json().Deserialize<UpdateJournal>(File.ReadAllText(marker));
-            if (journal == null || journal.format != 1 || !WorkspaceName(journal.workspace) || journal.files == null || journal.files.Count != Files.Length || !journal.files.Select(f => f.name).SequenceEqual(Files)) throw new InvalidDataException("Повреждён журнал обновления.");
+            if (journal == null || journal.format != 1 || !WorkspaceName(journal.workspace) || journal.files == null || journal.files.Any(f => f == null) || !KnownSet(journal.files.Select(f => f.name))) throw new InvalidDataException("Повреждён журнал обновления.");
             string backup = Path.Combine(target, journal.workspace, "old"); NoLinks(backup);
             // Validate every original before changing anything, also tolerating an
             // interrupted rollback whose original was already moved back.

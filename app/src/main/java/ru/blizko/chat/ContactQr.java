@@ -14,7 +14,7 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 import java.io.*;
 import java.util.*;
 
-/** QR pins both the message key and the iroh endpoint identity. */
+/** QR pins both the message key and the server transport identity. */
 final class ContactQr {
     static String requireContact(String value) {
         if (value != null && value.startsWith("blizko:2:")) throw new IllegalArgumentException("Это старый QR. Обновите оба приложения и обменяйтесь новыми кодами.");

@@ -1,95 +1,46 @@
-name: Build iroh native transport
+name: Build Android and server transport
 on:
   workflow_dispatch:
   push:
-    branches: [codex/iroh-transport, codex/windows-app]
-    paths: ['core/**', 'app/**', 'ios/**', 'scripts/**', '.github/workflows/iroh-native.yml']
+    branches: [main, codex/windows-app]
+    paths: ['core/**', 'app/**', 'scripts/**', '.github/workflows/android.yml']
 permissions:
   contents: read
 jobs:
-  native:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 55
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: '1.99.0'
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: core/iroh
-          cache-on-failure: true
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.2'
           cache-dependency-path: core/go.sum
       - uses: actions/setup-java@v4
-        if: runner.os == 'Linux'
         with:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-        if: runner.os == 'Linux'
         with:
           gradle-version: '8.11.1'
-      - name: Compile host and mobile static libraries
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd core/iroh
-          cargo build --release --locked
-          mkdir -p lib/host
-          cp target/release/libblizko_iroh.a lib/host/
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            NDK="$ANDROID_HOME/ndk/28.2.13676358"
-            if [[ ! -d "$NDK" ]]; then "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;28.2.13676358'; fi
-            export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-            export CC_aarch64_linux_android=aarch64-linux-android26-clang
-            export AR_aarch64_linux_android=llvm-ar
-            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android26-clang
-            export CC_x86_64_linux_android=x86_64-linux-android26-clang
-            export AR_x86_64_linux_android=llvm-ar
-            export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=x86_64-linux-android26-clang
-            targets='aarch64-linux-android x86_64-linux-android'
-          else
-            targets='aarch64-apple-ios'
-          fi
-          for target in $targets; do
-            rustup target add "$target"
-            cargo build --release --locked --target "$target"
-            mkdir -p "lib/$target"
-            cp "target/$target/release/libblizko_iroh.a" "lib/$target/"
-          done
-          rustc --version > lib/rust-version.txt
-          cp Cargo.lock lib/Cargo.lock
-      - name: Test shared core and real encrypted relay delivery
-        if: runner.os == 'Linux'
+      - name: Test shared core, broker and diagnostic retention
         working-directory: core
-        run: |
-          cargo test --manifest-path iroh/Cargo.toml --release --locked --lib
-          go test -race -tags=iroh ./mobile
-          BLIZKO_NETWORK_SMOKE=1 go test -tags=iroh -run TestIrohRealRelayDeliveryAndRestart -v ./mobile
-      - name: Collect Rust dependency licenses
-        run: python3 scripts/rust-notices.py
-      - name: Build Android embedded iroh
-        if: runner.os == 'Linux'
+        run: go test -race ./...
+      - name: Build Android
         run: |
           set -euo pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;28.2.13676358'
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
           cd core
           go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
           go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
           gomobile init
           mkdir -p ../app/libs
-          gomobile bind -target=android/arm64,android/amd64 -tags=iroh -androidapi 26 -ldflags='-s -w' -o ../app/libs/mobile.aar ./mobile
+          gomobile bind -target=android/arm64,android/amd64 -androidapi 26 -ldflags='-s -w' -o ../app/libs/mobile.aar ./mobile
           cd ..
           gradle --no-daemon :app:assembleRelease :app:assembleDebug :app:assembleDebugAndroidTest :app:lintRelease :app:lintDebug
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging app/build/outputs/apk/release/app-release-unsigned.apk > /tmp/blizko-release-badging.txt
-          if grep -q '^application-debuggable' /tmp/blizko-release-badging.txt; then echo 'Release APK enables debugging'; exit 1; fi
+          if grep -q '^application-debuggable' /tmp/blizko-release-badging.txt; then exit 1; fi
       - name: Run Android UI, QR, APK and encrypted delivery checks
         if: runner.os == 'Linux'
         shell: bash
@@ -113,9 +64,18 @@ jobs:
           done
           [[ "$(adb shell getprop sys.boot_completed | tr -d '\r')" == '1' ]]
           adb shell input keyevent 82
+          (cd core && go build -o /tmp/blizko-server ./server)
+          /tmp/blizko-server > /tmp/blizko-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$emulator_pid" "$server_pid" || true' EXIT
+          adb reverse tcp:3340 tcp:3340
           adb install app/build/outputs/apk/debug/app-debug.apk
           adb install app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           adb shell pm grant ru.blizko.chat android.permission.POST_NOTIFICATIONS
+          adb shell am instrument -w -r -e diagnostics true ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-diagnostics.txt
+          grep -q 'INSTRUMENTATION_CODE: -1' /tmp/blizko-diagnostics.txt
+          adb shell am instrument -w -r -e diagnostics true -e mode power ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-diagnostics-power.txt
+          grep -q 'INSTRUMENTATION_CODE: -1' /tmp/blizko-diagnostics-power.txt
           adb shell am instrument -w -r ru.blizko.chat.test/ru.blizko.chat.QrAndUpdateTest | tee /tmp/blizko-instrumentation.txt
           grep -q 'INSTRUMENTATION_CODE: -1' /tmp/blizko-instrumentation.txt
           adb root
@@ -143,35 +103,19 @@ jobs:
           name: Android-check-reports
           path: |
             /tmp/blizko-instrumentation.txt
+            /tmp/blizko-diagnostics.txt
+            /tmp/blizko-diagnostics-power.txt
             /tmp/blizko-emulator.log
             /tmp/blizko-release-badging.txt
             /tmp/blizko-service-restart.txt
             /tmp/blizko-service-stop.txt
             app/build/reports/lint-results-*.html
-      - name: Build iPhone
-        if: runner.os == 'macOS'
-        run: |
-          brew install xcodegen
-          bash scripts/build-ios.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: iroh-native-${{ matrix.os }}
-          path: core/iroh/lib
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
-        if: runner.os == 'Linux'
-        with:
-          name: Blizko-iroh-Android
+          name: Blizko-Android
           path: |
             app/libs/mobile.aar
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
             app/build/outputs/apk/androidTest/debug/*.apk
-            app/src/main/assets/IROH_NOTICES.txt
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
-        if: runner.os == 'macOS'
-        with:
-          name: Blizko-iroh-iPhone
-          path: dist/Blizko-unsigned.ipa
           retention-days: 7

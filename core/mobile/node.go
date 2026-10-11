@@ -1,4 +1,4 @@
-// Package mobile is the same embedded iroh/chat engine on Android and iOS.
+// Package mobile is the shared server-based chat engine on Android and Windows.
 // Its gomobile API only exposes strings, byte arrays and errors.
 package mobile
 
@@ -42,7 +42,7 @@ type diskState struct {
 	Contacts    []contact         `json:"contacts"`
 	Messages    []message         `json:"messages"`
 	Address     string            `json:"address"`
-	IrohSeed    [32]byte          `json:"irohSeed"`
+	NetworkSeed [32]byte          `json:"irohSeed"`
 	RelayOnly   bool              `json:"relayOnly"`
 	RelayURL    string            `json:"relayURL,omitempty"`
 	Drafts      map[string]string `json:"drafts,omitempty"`
@@ -54,7 +54,7 @@ type Node struct {
 	state            diskState
 	storage          *vault
 	dir              string
-	link             *irohLink
+	link             *serverLink
 	cancel           context.CancelFunc
 	wake             chan struct{}
 	status           string
@@ -111,13 +111,13 @@ func NewNode(dir string, storageKey []byte) (*Node, error) {
 	} else if e = json.Unmarshal(b, &n.state); e != nil || (n.state.Version != 2 && n.state.Version != 3 && n.state.Version != 4 && n.state.Version != 5) {
 		return nil, errors.New("Неизвестный формат хранилища")
 	}
-	if n.state.Version >= 4 && (n.state.IrohSeed == ([32]byte{}) || !validAddress(n.state.Address)) {
+	if n.state.Version >= 4 && (n.state.NetworkSeed == ([32]byte{}) || !validAddress(n.state.Address)) {
 		return nil, errors.New("Повреждены ключи устройства. Данные не удалены.")
 	}
 
-	if n.state.IrohSeed == ([32]byte{}) {
+	if n.state.NetworkSeed == ([32]byte{}) {
 		state := n.clone()
-		if _, e = rand.Read(state.IrohSeed[:]); e != nil {
+		if _, e = rand.Read(state.NetworkSeed[:]); e != nil {
 			return nil, e
 		}
 		if state.Version == 2 {
@@ -126,7 +126,7 @@ func NewNode(dir string, storageKey []byte) (*Node, error) {
 			}
 		}
 		state.Version = 3
-		state.Address = hex.EncodeToString(ed25519.NewKeyFromSeed(state.IrohSeed[:]).Public().(ed25519.PublicKey))
+		state.Address = hex.EncodeToString(ed25519.NewKeyFromSeed(state.NetworkSeed[:]).Public().(ed25519.PublicKey))
 		if e = n.commit(state); e != nil {
 			return nil, e
 		}
@@ -250,7 +250,7 @@ func (n *Node) statusLocked() map[string]any {
 	if server == "" {
 		server = homeRelayURL
 	}
-	status := map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "address": n.state.Address, "id": keyID(n.state.Public), "incoming": n.incoming, "revision": n.revision, "relay": n.relay, "relayURL": server, "relayOnly": n.state.RelayOnly, "transport": "iroh"}
+	status := map[string]any{"status": n.status, "enabled": n.enabled, "online": n.online, "address": n.state.Address, "id": keyID(n.state.Public), "incoming": n.incoming, "revision": n.revision, "relay": n.relay, "relayURL": server, "relayOnly": true, "transport": "server"}
 	counts, first, latest := map[string]int{}, map[string]int64{}, map[string]int64{}
 	for peer, indices := range n.inboxIndexes {
 		read := n.state.ReadThrough[peer]
@@ -400,7 +400,7 @@ func (n *Node) MyCode() (string, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if !validAddress(n.state.Address) {
-		return "", errors.New("Не удалось подготовить идентификатор iroh")
+		return "", errors.New("Не удалось подготовить идентификатор устройства")
 	}
 	return encodeContact(n.self()), nil
 }

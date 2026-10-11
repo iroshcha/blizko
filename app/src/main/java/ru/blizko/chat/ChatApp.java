@@ -11,7 +11,6 @@ import java.util.concurrent.*;
 import org.json.*;
 
 public final class ChatApp extends Application {
-    private static native void initializeIroh(android.content.Context context);
     public final ExecutorService io = Executors.newSingleThreadExecutor();
     public final ExecutorService network=Executors.newFixedThreadPool(2);
     public volatile Node node;
@@ -20,12 +19,12 @@ public final class ChatApp extends Application {
     public volatile String activePeer="",startupError;
     @Override public void onCreate() {
         super.onCreate();
+        Diagnostics.initialize(this);
         go.Seq.setContext(this);
-        initializeIroh(this);
         android.net.ConnectivityManager connectivity=getSystemService(android.net.ConnectivityManager.class);
         connectivity.registerDefaultNetworkCallback(new android.net.ConnectivityManager.NetworkCallback(){
-            @Override public void onAvailable(android.net.Network network){io.execute(ChatApp.this::refreshInterfaces);}
-            @Override public void onLost(android.net.Network network){io.execute(ChatApp.this::refreshInterfaces);}
+            @Override public void onAvailable(android.net.Network network){Diagnostics.record(ChatApp.this,"network");io.execute(ChatApp.this::refreshInterfaces);}
+            @Override public void onLost(android.net.Network network){Diagnostics.record(ChatApp.this,"network");io.execute(ChatApp.this::refreshInterfaces);}
         });
         io.execute(() -> {
             try { node = Mobile.newNode(new File(getNoBackupFilesDir(),"core").getPath(),StorageKey.load(this)); }

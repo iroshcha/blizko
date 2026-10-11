@@ -109,7 +109,7 @@ public final class MainActivity extends Activity {
             LinearLayout head=new LinearLayout(this);head.setGravity(Gravity.CENTER_VERTICAL);
             TextView title=text(peer.isEmpty()?"Близко":"‹  "+peerName(s,peer),30,INK);title.setMaxLines(1);title.setEllipsize(android.text.TextUtils.TruncateAt.END);title.setTypeface(null,Typeface.BOLD);head.addView(title,new LinearLayout.LayoutParams(0,-2,1));
             if(!peer.isEmpty())title.setOnClickListener(v->onBackPressed());
-            Button info=button("ⓘ",()->notice("История и очередь сообщений хранятся только на устройствах.\n\niroh встроен: аккаунт и отдельный VPN не нужны. Если прямое соединение невозможно, зашифрованные данные проходят через ваш домашний сервер. Он должен быть включён и подключён к интернету.\n\nОба устройства должны быть в сети с включённым приёмом. Удаление приложения удалит историю."));info.setContentDescription("Информация о приложении");head.addView(info);root.addView(head);
+            Button info=button("ⓘ",()->notice("История и очередь сообщений хранятся только на устройствах.\n\nЗашифрованные данные проходят через ваш домашний сервер. Сервер не имеет ключей для чтения сообщений. Он должен быть включён и подключён к интернету.\n\nОба устройства должны быть в сети с включённым приёмом. Удаление приложения удалит историю."));info.setContentDescription("Информация о приложении");head.addView(info);root.addView(head);
             root.addView(text("Личное остаётся у вас",14,MUTED));gap(root,14);
             if(app.node==null){root.addView(text(app.startupError==null?"Открываем защищённое хранилище…":"Хранилище не открыто. "+app.startupError,16,MUTED));return;}
             LinearLayout card=column();card.setPadding(dp(14),dp(10),dp(14),dp(10));card.setBackground(bg(Color.WHITE,16));
@@ -139,6 +139,7 @@ public final class MainActivity extends Activity {
         actions.addView(button("+ Контакт",this::addContact),new LinearLayout.LayoutParams(0,dp(50),1));root.addView(actions);gap(root,12);
         AppUpdates.Release update=AutoUpdates.available(this);
         root.addView(button(update==null?"Обновления · "+BuildConfig.VERSION_NAME:"Доступна версия "+update.versionName+" · Обновить",()->startActivity(new Intent(this,UpdateActivity.class))));
+        root.addView(button("Диагностика фоновой работы",()->startActivity(new Intent(this,DiagnosticActivity.class))));
         TextView label=text("ПЕРЕПИСКИ",12,MUTED);label.setLetterSpacing(.13f);root.addView(label);
         ScrollView scroll=new ScrollView(this);LinearLayout list=column();scroll.addView(list);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         JSONArray contacts=s.optJSONArray("contacts");JSONObject previews=s.optJSONObject("previews");
@@ -193,7 +194,7 @@ public final class MainActivity extends Activity {
     }
     private void sendMessage(){
         if(sending||compose==null||compose.getText().toString().trim().isEmpty())return;sending=true;String content=compose.getText().toString(),target=peer;flushDraft();
-        app.io.execute(()->{try{app.node.send(target,content);try{app.node.clearSentDraft(target,content);}catch(Exception e){app.error="Сообщение в очереди, но сохранённый черновик не очищен.";}
+        app.io.execute(()->{try{app.node.send(target,content);Diagnostics.record(this,"send_queued");try{app.node.clearSentDraft(target,content);}catch(Exception e){app.error="Сообщение в очереди, но сохранённый черновик не очищен.";}
             handler.post(()->{sending=false;if(content.equals(drafts.get(target)))drafts.put(target,"");if(target.equals(peer)&&compose!=null&&content.contentEquals(compose.getText())){draft="";compose.setText("");}contentKey="";refreshPage();});
         }catch(Exception e){handler.post(()->{sending=false;notice(e.getMessage());contentKey="";refreshPage();});}});
     }
@@ -234,15 +235,9 @@ public final class MainActivity extends Activity {
     });}
     private void networkSetup(){
         try {
-            boolean relay=new JSONObject(last).optBoolean("relayOnly");
-            new AlertDialog.Builder(this).setTitle("Соединение iroh")
-                .setSingleChoiceItems(new String[]{"Автоматически: напрямую или через ретранслятор","Только через ретранслятор (проверка)"},relay?1:0,(dialog,which)->{
-                    work(()->app.node.setRelayOnly(which==1));dialog.dismiss();
-                }).setNeutralButton("Адрес сервера",(dialog,which)->{
-                    EditText address=input("https://…");try{address.setText(new JSONObject(last).optString("relayURL"));}catch(Exception ignored){}
-                    AlertDialog edit=new AlertDialog.Builder(this).setTitle("Домашний сервер").setMessage("Укажите одинаковый HTTPS-адрес на всех устройствах. Пустое поле вернёт исходный адрес.").setView(address).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
-                    edit.setOnShowListener(v->edit.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b->{String value=address.getText().toString();work(()->{app.node.setRelayURL(value);runOnUiThread(edit::dismiss);});}));edit.show();
-                }).setNegativeButton("Закрыть",null).show();
+            EditText address=input("https://…");address.setText(new JSONObject(last).optString("relayURL"));
+            AlertDialog edit=new AlertDialog.Builder(this).setTitle("Домашний сервер").setMessage("Весь обмен идёт через сервер. Укажите одинаковый HTTPS-адрес на всех устройствах. Пустое поле вернёт исходный адрес.").setView(address).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
+            edit.setOnShowListener(v->edit.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(b->{String value=address.getText().toString();work(()->{app.node.setRelayURL(value);runOnUiThread(edit::dismiss);});}));edit.show();
         }catch(Exception e){notice("Хранилище ещё открывается");}
     }
     private void addContact(){new AlertDialog.Builder(this).setTitle("Добавить по QR")

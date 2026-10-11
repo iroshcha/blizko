@@ -7,24 +7,25 @@ import org.json.*;
 import mobile.Mobile;
 import mobile.Node;
 
-/** Real JNI + Rust + public-relay round trips on the Android runtime. No account or mocks. */
-final class IrohDeliveryCheck {
-    static void run(Context context) throws Exception {
-        File dir=new File(context.getNoBackupFilesDir(),"iroh-test-"+System.currentTimeMillis());
+/** Real Go + local-server round trips on the Android runtime. No account or mocks. */
+final class ServerDeliveryCheck {
+    static void run(Context context,String server) throws Exception {
+        File dir=new File(context.getNoBackupFilesDir(),"server-test-"+System.currentTimeMillis());
         byte[] key=new byte[32];new SecureRandom().nextBytes(key);
         Node a=Mobile.newNode(new File(dir,"a").getPath(),key);
         Node b=Mobile.newNode(new File(dir,"b").getPath(),key);
         try {
+            a.setRelayURL(server);b.setRelayURL(server);
             a.addContact("B",b.myCode());b.addContact("A",a.myCode());
             String aid=new JSONObject(a.snapshot()).getString("id"),bid=new JSONObject(b.snapshot()).getString("id");
-            for(boolean relayOnly:new boolean[]{true,false}) {
-                a.setRelayOnly(relayOnly);b.setRelayOnly(relayOnly);a.start();b.start();
-                String first="Android A → B "+relayOnly,second="Android B → A "+relayOnly;
+            for(int round=0;round<2;round++) {
+                a.start();b.start();
+                String first="Android A → B "+round,second="Android B → A "+round;
                 a.send(bid,first);b.send(aid,second);
                 awaitDelivered(a,first);awaitDelivered(b,second);
                 a.stop();b.stop();
             }
-            a.setRelayOnly(true);b.setRelayOnly(true);a.start();
+            a.start();
             a.send(bid,"Queued during offline");Thread.sleep(1500);b.start();
             awaitDelivered(a,"Queued during offline");
             if(!a.checkContact(bid).contains("подтвердил ваш контакт"))throw new AssertionError("Contact probe failed");
@@ -40,6 +41,6 @@ final class IrohDeliveryCheck {
             }
             Thread.sleep(300);
         }
-        throw new AssertionError("No verified iroh receipt within 90 seconds");
+        throw new AssertionError("No verified server receipt within 90 seconds");
     }
 }

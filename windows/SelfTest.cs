@@ -30,26 +30,24 @@ namespace Blizko {
                         bId = b.Request("snapshot").GetAwaiter().GetResult().snapshot.id;
                         a.Request("add", "Друг B", bCode).GetAwaiter().GetResult();
                         b.Request("add", "Друг A", aCode).GetAwaiter().GetResult();
-                        foreach (bool relay in new[] { true, false }) {
-                            a.Request("relay", value: relay).GetAwaiter().GetResult();
-                            b.Request("relay", value: relay).GetAwaiter().GetResult();
+                        for (int round=0;round<2;round++) {
                             a.Request("start").GetAwaiter().GetResult(); b.Request("start").GetAwaiter().GetResult();
-                            string first = "Привет с Windows 👋 " + relay, second = "Ответ с Windows 🌿 " + relay;
+                            string first = "Привет с Windows 👋 " + round, second = "Ответ с Windows 🌿 " + round;
                             a.Request("send", bId, first).GetAwaiter().GetResult(); b.Request("send", aId, second).GetAwaiter().GetResult();
                             WaitDelivered(a, first); WaitDelivered(b, second);
-                            log.AppendLine("PASS: two Windows processes, Unicode, authenticated delivery, relayOnly=" + relay);
+                            log.AppendLine("PASS: two Windows processes, Unicode, authenticated delivery, server round=" + round);
                             a.Request("stop").GetAwaiter().GetResult(); b.Request("stop").GetAwaiter().GetResult();
                         }
                         b.Request("quit").GetAwaiter().GetResult();
                     }
-                    a.Request("relay", value: true).GetAwaiter().GetResult(); a.Request("start").GetAwaiter().GetResult();
+                    a.Request("start").GetAwaiter().GetResult();
                     string queued = "Сохранено, пока собеседник выключен";
                     a.Request("send", bId, queued).GetAwaiter().GetResult();
                     Snapshot offline = a.Request("snapshot").GetAwaiter().GetResult().snapshot;
                     if (!offline.messages.Any(m => m.text == queued && !m.delivered)) throw new Exception("Offline queue missing");
                     using (var restarted = new Engine(Path.Combine(directory, "b"))) {
                         if (restarted.Request("code").GetAwaiter().GetResult().code != bCode) throw new Exception("Peer identity changed after process restart");
-                        restarted.Request("relay", value: true).GetAwaiter().GetResult(); restarted.Request("start").GetAwaiter().GetResult();
+                        restarted.Request("start").GetAwaiter().GetResult();
                         WaitDelivered(a, queued);
                         string check = a.Request("check", bId).GetAwaiter().GetResult().code;
                         if (!check.Contains("подтвердил ваш контакт")) throw new Exception("Contact probe failed");
@@ -108,7 +106,7 @@ namespace Blizko {
                 SavePreview(controller, Path.Combine(directory, "windows-preview.png"));
                 log.AppendLine("PASS: native WPF window loads and renders");
                 long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
-                var conversation = new Snapshot { status = "Подключено · iroh", enabled = true, online = true };
+                var conversation = new Snapshot { status = "Подключено · через сервер", enabled = true, online = true };
                 conversation.contacts.Add(new Contact { id = "preview", name = "Анна" });
                 conversation.messages.Add(new ChatMessage { id = "one", peer = "preview", text = "Привет! Как твой день? 🌿", time = now - 120000 });
                 conversation.messages.Add(new ChatMessage { id = "two", peer = "preview", text = "Привет! Пишу тебе с компьютера. Всё рядом — и без регистрации.", @out = true, delivered = true, time = now - 60000 });

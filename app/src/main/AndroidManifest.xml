@@ -21,6 +21,8 @@
         <activity android:name=".QrScanActivity" android:exported="false" android:screenOrientation="fullSensor"
             android:theme="@style/zxing_CaptureTheme" android:stateNotNeeded="true" />
         <activity android:name=".UpdateActivity" android:exported="false" />
+        <activity android:name=".DiagnosticActivity" android:exported="false" />
+        <service android:name=".DiagnosticJobService" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
         <service android:name=".UpdateJobService" android:exported="true" android:permission="android.permission.BIND_JOB_SERVICE" />
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.qr"
             android:exported="false" android:grantUriPermissions="true">
