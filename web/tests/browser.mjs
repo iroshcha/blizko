@@ -9,7 +9,8 @@ import QRCode from 'qrcode';
 
 const root=resolve(import.meta.dirname,'../..'), output=join(root,'.tools/web-checks');await mkdir(output,{recursive:true});
 const base=process.env.BLIZKO_WEB_TEST_URL||'http://127.0.0.1:39343';
-let server=process.env.BLIZKO_WEB_TEST_URL?null:spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39343','-web-origin',base],{windowsHide:true});
+const mailboxDir=await mkdtemp(join(output,'mailbox-'));
+let server=process.env.BLIZKO_WEB_TEST_URL?null:spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39343','-web-origin',base,'-mailbox',mailboxDir],{windowsHide:true});
 let serverLog='';server?.stderr.on('data',b=>serverLog+=b);
 async function until(fn,label,timeout=30000){const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await pause(150);}throw Error('Timeout: '+label);}
 await until(async()=>{try{return (await fetch(base+'/healthz')).status===204;}catch{return false;}},'server');
@@ -52,6 +53,18 @@ try {
    await page.locator('#messages').getByText('Сохранено без собеседника',{exact:true}).waitFor();await page.locator('#message').fill('Черновик после перезапуска');await pause(500);
    await page.reload();await page.getByRole('button',{name:'Открыть чат: Компьютер'}).click();assert.equal(await page.locator('#message').inputValue(),'Черновик после перезапуска');
    await command({op:'start'});await until(async()=> (await command({op:'snapshot'})).messages.filter(m=>m.text==='Сохранено без собеседника').length===1,'offline queue delivered once');
+   await until(()=>page.locator('.bubble-meta').allTextContents().then(a=>a.filter(s=>s.includes('Доставлено')).length>=2),'offline receipt');
+   // Devices never overlap online: server retains ciphertext and then receipt.
+   await command({op:'stop'});
+   for(let i=0;i<3;i++){await page.locator('#message').fill('Доставка после закрытия '+i);await page.locator('#send').click();}
+   await until(()=>page.locator('.bubble-meta').allTextContents().then(a=>a.filter(s=>s.includes('На сервере')).length===3),'all offline packets stored');
+   await page.goto('about:blank');await command({op:'start'});
+   await until(async()=> (await command({op:'snapshot'})).messages.filter(m=>m.text.startsWith('Доставка после закрытия ')).length===3,'sender closed, recipient received');
+   await command({op:'send',peer:identity.id,text:'Веб был закрыт при отправке'});
+   await until(async()=> (await command({op:'snapshot'})).messages.some(m=>m.text==='Веб был закрыт при отправке'&&m.storedUntil>0),'native uploaded offline message');
+   await command({op:'stop'});await visit(page);await page.getByRole('button',{name:'Открыть чат: Компьютер'}).click();
+   await page.locator('#messages').getByText('Веб был закрыт при отправке',{exact:true}).waitFor();
+   await until(()=>page.locator('.bubble-meta').allTextContents().then(a=>a.filter(s=>s.includes('Доставлено')).length>=5),'receipts while receiver offline');
    await page.locator('#back').click();await page.locator('#qr-open').click();assert.equal(await page.locator('#own-code').inputValue(),code,'stable identity');await page.locator('#qr-dialog [data-close]').click();
    // A second tab cannot race the vault and replace the active socket.
    const second=await context.newPage();await second.goto(base+'/web/');await second.locator('#fatal').waitFor({state:'visible'});assert.match(await second.locator('#fatal-text').textContent(),/другой вкладке/);await second.close();
@@ -75,7 +88,7 @@ try {
    assert.equal(workerState.controlled,true,'service worker controls the page');
    if(name==='webkit' && server) {server.kill();await pause(1000);} else await restored.setOffline(true);
    await restoredPage.reload();await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();await restoredPage.locator('#messages').getByText(hello,{exact:true}).waitFor();
-   if(name==='webkit' && server) {server=spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39343','-web-origin',base],{windowsHide:true});server.stderr.on('data',b=>serverLog+=b);} else await restored.setOffline(false);
+   if(name==='webkit' && server) {server=spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39343','-web-origin',base,'-mailbox',mailboxDir],{windowsHide:true});server.stderr.on('data',b=>serverLog+=b);} else await restored.setOffline(false);
    await restoredPage.locator('#back').click();await restoredPage.screenshot({animations:'disabled',path:join(output,name+'-contacts.png')});await restored.close();
    assert.deepEqual(errors,[],'browser errors');summary.push(name+': PASS — Go interop, encrypted receipts, QR photo, storage failure, offline outbox, reload, draft, tab lock/CAS, backup/restore, offline shell, mobile layout');console.log(summary.at(-1));
   }catch(e){console.log('Browser errors:',errors);await page.screenshot({animations:'disabled',path:join(output,name+'-failure.png')}).catch(()=>{});throw e;}

@@ -1,5 +1,6 @@
 import {newIdentity,parseContact,randomID,goJSON,signFrame,verifyFrame,login,seal,open,utf8} from './protocol.js';
 import {Vault} from './storage.js';
+const CONTROL='0'.repeat(64);
 
 export class Chat extends EventTarget {
  constructor(base=location.origin) {
@@ -48,8 +49,8 @@ export class Chat extends EventTarget {
  }
  draft(peer,value) {return this.mutate(s=>{if(utf8(value).length>16000)throw Error('Черновик слишком длинный');s.drafts[peer]=value;});}
  markRead(peer) {return this.mutate(s=>{s.read[peer]=Date.now();});}
- async cancel(peer,id) {await this.mutate(s=>{const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.out);if(m&&!m.delivered)m.cancelled=true;});}
- async retryMessage(peer,id) {await this.mutate(s=>{const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.out);if(m&&!m.delivered)m.cancelled=false;});this.retry.delete(peer);this.flush();}
+ async cancel(peer,id) {await this.mutate(s=>{const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.out);if(m&&!m.delivered){if(m.submitted)throw Error('Сообщение уже передано на отправку. Получатель может получить его позже; отмена недоступна.');m.cancelled=true;}});}
+ async retryMessage(peer,id) {await this.mutate(s=>{const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.out);if(m&&!m.delivered){m.cancelled=false;m.pollAfter=0;}});this.retry.delete(peer);this.flush();}
  async accept(from,data) {
   const c=this.state.contacts.find(c=>c.address===from);
   if(from===this.state.identity.address&&data==='{"probe":true}')return {status:200};
@@ -84,12 +85,18 @@ export class Chat extends EventTarget {
     if(typeof event.data!=='string'||utf8(event.data).length>48000)throw Error();
     const f=JSON.parse(event.data);
     if(phase==='challenge') {if(f.type!=='challenge')throw Error();ws.send(JSON.stringify(login(f.challenge,this.state.identity)));phase='ready';return;}
-    if(phase==='ready') {if(f.type!=='ready')throw Error();phase='frames';clearTimeout(this.handshake);this.online=true;this.backoff=500;this.retry.clear();this.change();this.flush();return;}
+    if(phase==='ready') {if(f.type!=='ready')throw Error();phase='frames';clearTimeout(this.handshake);this.online=true;this.backoff=500;this.retry.clear();this.change();this.flush();this.control('config').then(r=>{this.serverConfig=JSON.parse(r.data);this.change();}).catch(()=>{});return;}
     if(f.to!==this.state.identity.address)return;
     const p=this.pending.get(f.id);
     if(f.type==='unavailable') {if(p&&p.peer===f.from)p.reject(Error('Собеседник не в сети'));return;}
+    if(f.type==='server') {if(p&&p.peer===CONTROL&&f.from===CONTROL&&f.result)p.resolve(f.result);return;}
+    if(f.type==='stored') {if(p&&p.peer===f.from&&f.from!==CONTROL)p.resolve({status:202,code:'stored',data:f.data});return;}
     if(!verifyFrame(f))throw Error();
-    if(f.type==='response') {if(p&&p.peer===f.from)p.resolve(f.result);return;}
+    if(f.type==='response') {
+     if(p&&p.peer===f.from)p.resolve(f.result);
+     if(f.result.status===200&&f.result.data&&this.inbound<8){this.inbound++;try{await this.receipt(f);}catch{/* Keep the server receipt until local storage succeeds. */}finally{this.inbound--;}}
+     return;
+    }
     if(this.inbound>=8)return;
     this.inbound++;
     try {const result=await this.accept(f.from,f.data);if(this.ws===ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(signFrame({type:'response',id:f.id,from:this.state.identity.address,to:f.from,result},this.state.identity)));}
@@ -101,6 +108,19 @@ export class Chat extends EventTarget {
    if(!this.stopped){this.reconnectTimer=setTimeout(()=>this.connect(),this.backoff+Math.random()*300);this.backoff=Math.min(15000,this.backoff*2);}
   };
   ws.onerror=()=>ws.close();
+ }
+ async control(op,fields={}) {
+  const r=await this.exchange(CONTROL,JSON.stringify({op,...fields}));
+  if(r.status!==200)throw Error(r.status===429?'Повторите через минуту':r.status===503?'Сервер временно недоступен':'Сервер не выполнил запрос');
+  return r;
+ }
+ async receipt(f) {
+  const c=this.state.contacts.find(c=>c.address===f.from);if(!c)return;
+  const ack=open(JSON.parse(f.result.data),c,this.state.identity);if(ack.kind!=='ack')return;
+  const m=this.state.messages.find(m=>m.out&&m.peer===c.id&&m.id===ack.ack);
+  if(m&&!m.delivered)await this.mutate(s=>{const found=s.messages.find(x=>x.out&&x.peer===c.id&&x.id===ack.ack);if(found){found.delivered=true;found.cancelled=false;delete found.packet;}});
+  this.issues.delete(c.id);this.retry.delete(c.id);this.change();
+  await this.control('receipt-done',{id:f.id,sender:f.from});
  }
  exchange(peer,data) {
   if(!this.online||!this.ws||this.pending.size>=16)return Promise.reject(Error('Соединение недоступно'));
@@ -120,7 +140,7 @@ export class Chat extends EventTarget {
   for(const c of this.state.contacts) {
    if(this.active.size>=4)break;
    if(this.active.has(c.id)||Date.now()<(this.retry.get(c.id)?.next||0))continue;
-   const m=this.state.messages.find(m=>m.peer===c.id&&m.out&&!m.delivered&&!m.cancelled);
+   const m=this.state.messages.find(m=>m.peer===c.id&&m.out&&!m.delivered&&!m.cancelled&&Date.now()>=(m.pollAfter||0));
    if(!m)continue;
    this.active.add(c.id);
    this.deliver(c,m).finally(()=>{this.active.delete(c.id);});
@@ -128,12 +148,20 @@ export class Chat extends EventTarget {
  }
  async deliver(c,m) {
   try {
+   let active=false;
+   await this.mutate(s=>{const found=s.messages.find(x=>x.out&&x.id===m.id&&x.peer===c.id);if(found&&!found.cancelled&&!found.delivered){found.submitted=true;active=true;}});
+   if(!active)return;
    const r=await this.exchange(c.address,goJSON(m.packet));
+   if(r.status===202&&r.code==='stored') {
+    const expires=Number(r.data);if(!Number.isFinite(expires)||expires<Date.now()||expires>Date.now()+8*86400000)throw Error('Не удалось проверить срок хранения');
+    await this.mutate(s=>{const found=s.messages.find(x=>x.out&&x.id===m.id&&x.peer===c.id);if(found&&!found.delivered){found.storedUntil=expires;found.pollAfter=Date.now()+30000;}});
+    this.retry.delete(c.id);this.issues.delete(c.id);return;
+   }
    if(r.status!==200)throw Error(({unknown_contact:'У собеседника нет вашего QR',history_full:'У собеседника заполнена история',storage_failed:'Собеседник не смог сохранить сообщение',invalid_message:'Собеседник отклонил сообщение'})[r.code]||'Отправка будет повторена');
    const ack=open(JSON.parse(r.data),c,this.state.identity);
    if(ack.kind!=='ack'||ack.ack!==m.id)throw Error('Неверное подтверждение доставки');
    await this.mutate(s=>{const found=s.messages.find(x=>x.out&&x.id===m.id&&x.peer===c.id);if(found){found.delivered=true;found.cancelled=false;delete found.packet;}});
    this.retry.delete(c.id);this.issues.delete(c.id);this.change();
-  }catch(e){const delay=Math.min(30000,(this.retry.get(c.id)?.delay||1000)*2);this.retry.set(c.id,{delay,next:Date.now()+delay});this.issues.set(c.id,e.message);this.change();}
+  }catch(e){if(this.state.messages.some(x=>x.out&&x.peer===c.id&&x.id===m.id&&x.delivered))return;const delay=Math.min(30000,(this.retry.get(c.id)?.delay||1000)*2);this.retry.set(c.id,{delay,next:Date.now()+delay});this.issues.set(c.id,e.message);this.change();}
  }
 }

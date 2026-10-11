@@ -3,9 +3,11 @@ import jsQR from 'jsqr';
 import {Chat} from './client.js';
 import {contactCode} from './protocol.js';
 import {exportBackup,importBackup} from './storage.js';
+import {setupPush} from './push.js';
 
 const $=id=>document.getElementById(id);
 const chat=new Chat();
+setupPush(chat,s=>toast(s));
 let current='',messageKey='',toastTimer,backupMode='export',registration,releaseLock;
 function toast(s){$('toast').textContent=s;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
 function fail(e){toast(e?.message||'Действие не выполнено. Попробуйте снова.');}
@@ -49,8 +51,8 @@ function render() {
  for(const m of messages) {
   const date=day(m.time);if(date!==previous){box.append(element('div','day-label',date));previous=date;}
   const b=element('article','bubble'+(m.out?' out':''));b.append(element('div','bubble-text',m.text));
-  b.append(element('div','bubble-meta',time(m.time)+(m.out?' · '+(m.delivered?'Доставлено ✓✓':m.cancelled?'Отменено':'В очереди ◷'):'')));
-  if(m.out&&!m.delivered){const controls=element('div','bubble-actions');const retry=element('button','',m.cancelled?'Отправить снова':'Повторить');retry.onclick=()=>chat.retryMessage(m.peer,m.id).catch(fail);controls.append(retry);if(!m.cancelled){const cancel=element('button','','Отменить');cancel.onclick=()=>chat.cancel(m.peer,m.id).catch(fail);controls.append(cancel);}b.append(controls);}
+  b.append(element('div','bubble-meta',time(m.time)+(m.out?' · '+(m.delivered?'Доставлено ✓✓':m.cancelled?'Отменено':m.storedUntil>Date.now()?'На сервере ◷':'В очереди ◷'):'')));
+  if(m.out&&!m.delivered){const controls=element('div','bubble-actions');const retry=element('button','',m.cancelled?'Отправить снова':'Повторить');retry.onclick=()=>chat.retryMessage(m.peer,m.id).catch(fail);controls.append(retry);if(!m.cancelled&&!m.submitted){const cancel=element('button','','Отменить');cancel.onclick=()=>chat.cancel(m.peer,m.id).catch(fail);controls.append(cancel);}b.append(controls);}
   box.append(b);
  }
  if(nearBottom||messages.at(-1)?.out)box.scrollTop=box.scrollHeight;

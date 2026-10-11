@@ -6,6 +6,8 @@ import (
 	"net/http"
 )
 
+const storedIssue = "Зашифрованное сообщение сохранено на сервере. Ждём подтверждения получателя."
+
 var (
 	errUnknownContact = errors.New("unknown contact")
 	errInvalidMessage = errors.New("invalid message")
@@ -14,6 +16,8 @@ var (
 
 func deliveryResponseIssue(res *http.Response) string {
 	switch res.Header.Get("X-Blizko-Error") {
+	case "stored":
+		return storedIssue
 	case "unknown_contact":
 		return "На телефоне собеседника нет вашего контакта. Попросите его заново добавить ваш QR. Сообщение осталось в очереди."
 	case "invalid_message":
@@ -74,6 +78,9 @@ func (n *Node) CancelMessage(peer, id string) error {
 	if m.Cancelled {
 		return nil
 	}
+	if m.Submitted {
+		return errors.New("Сообщение уже передано на отправку. Получатель может получить его позже; отмена недоступна.")
+	}
 	m.Cancelled = true
 	m.Failure = ""
 	if err := n.storeMessage(m, index); err != nil {
@@ -104,6 +111,7 @@ func (n *Node) RetryMessage(peer, id string) error {
 	if !validPacket(m.Packet) {
 		return errors.New("Пакет слишком велик. Отмените сообщение и отправьте сокращённый текст.")
 	}
+	m.PollAfter = 0
 	m.Cancelled = false
 	m.Failure = ""
 	if err := n.storeMessage(m, index); err != nil {

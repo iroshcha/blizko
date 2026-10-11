@@ -98,7 +98,20 @@ try {
             $logs = Join-Path $serverRoot 'logs'
             New-Item -ItemType Directory -Force -Path $logs | Out-Null
             $job = New-Object BlizkoRelayProcessJob
+            # VAPID private key and encrypted queue belong only to the server account.
+            $mailboxPath = Join-Path $serverRoot 'delivery-private'
+            if (Test-Path -LiteralPath $mailboxPath) {
+                if ((Get-Item -LiteralPath $mailboxPath).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe delivery directory.' }
+            } else { New-Item -ItemType Directory -Path $mailboxPath | Out-Null }
+            $acl = New-Object Security.AccessControl.DirectorySecurity
+            $acl.SetAccessRuleProtection($true, $false)
+            $account = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            foreach ($sid in @($account, (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')), (New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))) {
+                $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+            }
+            Set-Acl -LiteralPath $mailboxPath -AclObject $acl
             $serverArguments = @('-listen', '127.0.0.1:3340')
+            $serverArguments += @('-mailbox', ('"' + $mailboxPath + '"'))
             if ($hostname) { $serverArguments += @('-web-origin', ('https://' + $hostname)) }
             $tokenFile = Join-Path $serverRoot 'diagnostics-private\access-code.txt'
             if (Test-Path -LiteralPath $tokenFile -PathType Leaf) { $serverArguments += @('-token', ('"' + $tokenFile + '"'), '-data', ('"' + (Join-Path $serverRoot 'diagnostics-private\journal') + '"')) }

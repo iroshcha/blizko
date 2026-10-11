@@ -292,7 +292,7 @@ namespace Blizko {
             issueBox.Visibility = hasIssue ? Visibility.Visible : Visibility.Collapsed;
             UpdateButtons();
             var conversation = snapshot.messages.Where(m => m.peer == peer).ToList();
-            string key = peer + ":"+before+":"+historyQuery+"\n" + snapshot.enabled+":"+(snapshot.firstUnread!=null&&snapshot.firstUnread.ContainsKey(peer)?snapshot.firstUnread[peer]:0)+"\n"+String.Join("\n", conversation.Select(m => m.id + ":" + m.delivered+":"+m.cancelled+":"+m.failure+":"+(snapshot.sending!=null&&snapshot.sending.ContainsKey(peer)?snapshot.sending[peer]:"")));
+            string key = peer + ":"+before+":"+historyQuery+"\n" + snapshot.enabled+":"+(snapshot.firstUnread!=null&&snapshot.firstUnread.ContainsKey(peer)?snapshot.firstUnread[peer]:0)+"\n"+String.Join("\n", conversation.Select(m => m.id + ":" + m.delivered+":"+m.storedUntil+":"+m.submitted+":"+m.cancelled+":"+m.failure+":"+(snapshot.sending!=null&&snapshot.sending.ContainsKey(peer)?snapshot.sending[peer]:"")));
             if (key == lastConversation) return;bool changedPage=!lastConversation.StartsWith(peer+":"+before+":"+historyQuery+"\n",StringComparison.Ordinal); lastConversation = key;
             double offset = scroll.VerticalOffset;
             bool atEnd = scroll.ExtentHeight - scroll.VerticalOffset - scroll.ViewportHeight < 40;
@@ -306,7 +306,7 @@ namespace Blizko {
                 var content = new StackPanel();
                 content.Children.Add(new TextBlock { Text = message.text, TextWrapping = TextWrapping.Wrap, FontSize = 15 });
                 string time = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(message.time).ToLocalTime().ToString("HH:mm");
-                if (message.@out) time += message.delivered ? " · Доставлено" :message.cancelled?" · Отменено":!String.IsNullOrEmpty(message.failure)?" · Не отправлено":snapshot.sending!=null&&snapshot.sending.ContainsKey(peer)&&snapshot.sending[peer]==message.id?" · Отправляем…":!snapshot.enabled?" · Ожидает включения приёма":" · В очереди";
+                if (message.@out) time += message.delivered ? " · Доставлено" :message.cancelled?" · Отменено":message.storedUntil > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()?" · На сервере":!String.IsNullOrEmpty(message.failure)?" · Не отправлено":snapshot.sending!=null&&snapshot.sending.ContainsKey(peer)&&snapshot.sending[peer]==message.id?" · Отправляем…":!snapshot.enabled?" · Ожидает включения приёма":" · В очереди";
                 if(!String.IsNullOrEmpty(message.failure))content.Children.Add(Label(message.failure));
                 content.Children.Add(new TextBlock { Text = time, FontSize = 11, Foreground = Muted, Margin = new Thickness(0, 7, 0, 0) });
                 var bubble=new Border { Child = content,Tag=message.order, Padding = new Thickness(16, 12, 16, 12), CornerRadius = new CornerRadius(14),
@@ -315,7 +315,7 @@ namespace Blizko {
                     MaxWidth = Math.Max(260, Window.ActualWidth > 0 ? (Window.ActualWidth - 380) * 0.85 : 480), Margin = new Thickness(0, 0, 0, 10) };
                 var menu=new ContextMenu();var copy=new MenuItem{Header="Копировать текст"};copy.Click+=delegate{Clipboard.SetText(message.text);};menu.Items.Add(copy);
                 if(message.@out&&!message.delivered&&!preview){var retry=new MenuItem{Header="Повторить отправку"};retry.Click+=async delegate{await Action(async()=>{await engine.Request("retry",message.peer,message.id);});};menu.Items.Add(retry);
-                    if(!message.cancelled){var cancel=new MenuItem{Header="Отменить отправку"};cancel.Click+=async delegate{if(MessageBox.Show(Window,"Повторные попытки прекратятся. Если собеседник уже получил сообщение, отмена не удалит его у него.","Отменить отправку?",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)await Action(async()=>{await engine.Request("cancel",message.peer,message.id);});};menu.Items.Add(cancel);}}
+                    if(!message.cancelled&&!message.submitted){var cancel=new MenuItem{Header="Отменить отправку"};cancel.Click+=async delegate{if(MessageBox.Show(Window,"Повторные попытки прекратятся. Если собеседник уже получил сообщение, отмена не удалит его у него.","Отменить отправку?",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)await Action(async()=>{await engine.Request("cancel",message.peer,message.id);});};menu.Items.Add(cancel);}}
                 bubble.ContextMenu=menu;messages.Children.Add(bubble);
             }
             Border unreadBubble=scrollUnread&&unreadFirst>0?messages.Children.OfType<Border>().FirstOrDefault(b=>b.Tag is long&&(long)b.Tag==unreadFirst):null;scrollUnread=false;

@@ -1,4 +1,4 @@
-param([string]$ServerRoot = $PSScriptRoot, [string]$WebOrigin = '')
+﻿param([string]$ServerRoot = $PSScriptRoot, [string]$WebOrigin = '')
 $ErrorActionPreference = 'Stop'
 # Run under the Windows account running the server, with the binary beside this script.
 $root = [IO.Path]::GetFullPath($ServerRoot)
@@ -21,7 +21,7 @@ if (-not (Test-Path -LiteralPath $token)) {
     & $binary -init -token $token
     if ($LASTEXITCODE -ne 0) { throw 'Cannot create diagnostic access code.' }
 }
-$arguments = @('-listen', '127.0.0.1:3340', '-data', (Join-Path $private 'journal'), '-token', $token)
+$arguments = @('-mailbox', (Join-Path $private 'delivery'), '-listen', '127.0.0.1:3340', '-data', (Join-Path $private 'journal'), '-token', $token)
 if ($WebOrigin) { $arguments += @('-web-origin', $WebOrigin) }
 & $binary @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Blizko server stopped.' }

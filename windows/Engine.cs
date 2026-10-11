@@ -24,6 +24,8 @@ namespace Blizko {
         public string text { get; set; }
         public bool @out { get; set; }
         public bool delivered { get; set; }
+        public bool submitted { get; set; }
+        public long storedUntil { get; set; }
         public long time { get; set; }
         public long order { get; set; }
         public bool cancelled { get; set; }
