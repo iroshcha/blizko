@@ -1,1 +1,1 @@
-{"name":"blizko-web","version":"0.1.0","private":true,"type":"module","scripts":{"build":"node build.mjs","test":"node --test tests/protocol.test.mjs"},"dependencies":{"tweetnacl":"1.0.3","jsqr":"1.4.0","qrcode":"1.5.4"},"devDependencies":{"esbuild":"0.25.12","@playwright/test":"1.56.1"}}
+{"name":"blizko-web","version":"0.1.1","private":true,"type":"module","scripts":{"build":"node build.mjs","test":"node --test tests/protocol.test.mjs"},"dependencies":{"tweetnacl":"1.0.3","jsqr":"1.4.0","qrcode":"1.5.4"},"devDependencies":{"esbuild":"0.25.12","@playwright/test":"1.56.1"}}

@@ -45,7 +45,7 @@ export class Vault {
  }
 }
 export async function validateState(s) {
- if(!s||s.v!==1||!Array.isArray(s.contacts)||s.contacts.length>100||!Array.isArray(s.messages)||s.messages.length>2000||!s.drafts||!s.read)throw Error('Неверный формат копии');
+ if(!s||s.v!==1||!Array.isArray(s.contacts)||s.contacts.length>100||!Array.isArray(s.messages)||s.messages.length>40000||s.messages.filter(m=>!m?.archived).length>2000||!s.drafts||!s.read)throw Error('Неверный формат копии');
  await validateIdentity(s.identity);
  // Imported backups are authenticated, but still validate every displayed field.
  const ids=new Set();
@@ -55,8 +55,14 @@ export async function validateState(s) {
   await parseContact(code,c.name);
   if(ids.has(c.id)||c.id===s.identity.id)throw Error('Дубликат контакта');ids.add(c.id);
  }
+ const messageIDs=new Set();
  for(const m of s.messages) {
-  if(!m||!ids.has(m.peer)||!/^[a-f0-9]{32}$/.test(m.id)||typeof m.text!=='string'||utf8(m.text).length>4000||!Number.isFinite(m.time)||typeof m.out!=='boolean'||typeof m.delivered!=='boolean')throw Error('Повреждена история');
+  if(!m||!ids.has(m.peer)||!/^[a-f0-9]{32}$/.test(m.id)||!Number.isFinite(m.time)||typeof m.out!=='boolean'||typeof m.delivered!=='boolean')throw Error('Повреждена история');
+  const id=m.peer+'/'+m.id+'/'+m.out;
+  if(messageIDs.has(id))throw Error('Повтор записи в истории');messageIDs.add(id);
+  if(m.archived) {
+   if(m.archived!==true||m.out||!m.delivered||m.text!==undefined||m.packet!==undefined||!/^[a-f0-9]{64}$/.test(m.digest))throw Error('Повреждено подтверждение');
+  }else if(typeof m.text!=='string'||!utf8(m.text).length||utf8(m.text).length>4000)throw Error('Повреждена история');
  }
  for(const [id,draft] of Object.entries(s.drafts))if(!ids.has(id)||typeof draft!=='string'||utf8(draft).length>16000)throw Error('Повреждён черновик');
  return s;

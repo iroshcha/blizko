@@ -27,6 +27,9 @@ func TestExactOriginAndPrivateFiles(t *testing.T) {
 		if !strings.Contains(w.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") || w.Header().Get("X-Content-Type-Options") != "nosniff" {
 			t.Fatal("missing security headers")
 		}
+		if p == "/web/manifest.webmanifest" && !strings.HasPrefix(w.Header().Get("Content-Type"), "application/manifest+json") {
+			t.Fatal("manifest must have its PWA MIME type")
+		}
 	}
 	for _, p := range []string{"/web/../access-code.txt", "/web/.env", "/web/unknown", "/web/assets/"} {
 		w := httptest.NewRecorder()

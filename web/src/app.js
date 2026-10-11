@@ -27,7 +27,7 @@ function render() {
  const list=$('contacts');list.replaceChildren();
  for(const c of s.contacts) {
   if(!c.name.toLocaleLowerCase('ru').includes(search))continue;
-  const all=s.messages.filter(m=>m.peer===c.id), last=all.at(-1);
+  const all=s.messages.filter(m=>m.peer===c.id&&!m.archived), last=all.at(-1);
   const button=element('button','contact'+(current===c.id?' selected':''));button.setAttribute('aria-label',`Открыть чат: ${c.name}`);
   button.append(element('div','avatar',initial(c.name)));
   const info=element('div','contact-info');info.append(element('div','contact-name',c.name),element('div','preview',last?(last.out?'Вы: ':'')+last.text:'Обменяйтесь QR и поздоровайтесь'));button.append(info);
@@ -41,7 +41,7 @@ function render() {
  const c=s.contacts.find(c=>c.id===current);if(!c)return;
  $('chat-name').textContent=c.name;$('chat-avatar').textContent=initial(c.name);
  const issue=chat.issues.get(current);$('delivery-issue').hidden=!issue;$('delivery-issue').textContent=issue||'';
- const messages=s.messages.filter(m=>m.peer===current),key=JSON.stringify(messages);
+ const messages=s.messages.filter(m=>m.peer===current&&!m.archived),key=JSON.stringify(messages);
  if(key===messageKey)return;messageKey=key;
  const box=$('messages'),nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<100;
  box.replaceChildren();let previous='';
@@ -61,7 +61,7 @@ async function openChat(id) {
 }
 chat.addEventListener('change',()=>{
  render();
- if(current&&document.visibilityState==='visible'&&chat.state.messages.some(m=>m.peer===current&&!m.out&&m.time>(chat.state.read[current]||0)))chat.markRead(current).catch(fail);
+ if(current&&document.visibilityState==='visible'&&chat.state.messages.some(m=>m.peer===current&&!m.out&&!m.archived&&m.time>(chat.state.read[current]||0)))chat.markRead(current).catch(fail);
 });
 $('search').addEventListener('input',render);
 $('message').addEventListener('input',()=>{if(current)chat.draft(current,$('message').value).catch(fail);});
@@ -78,6 +78,8 @@ action('qr-open',async()=>{
 });
 action('copy-code',async()=>{try{await navigator.clipboard.writeText($('own-code').value);toast('Код скопирован');}catch{$('own-code').focus();$('own-code').select();toast('Выделили код: выберите «Скопировать».');}});
 action('settings-open',()=>{$('profile-name').textContent=chat.state.identity.name;dialog('settings-dialog');});
+action('clear-open',()=>dialog('clear-dialog'));
+action('clear-confirm',async()=>{const removed=await chat.clearHistory();$('clear-dialog').close();toast(`Очищено сообщений: ${removed}. Неотправленные сообщения и черновики сохранены.`);});
 for(const button of document.querySelectorAll('[data-close]'))button.addEventListener('click',()=>button.closest('dialog').close());
 action('scan-camera',()=>$('camera-file').click());action('scan-photo',()=>$('photo-file').click());
 for(const id of ['camera-file','photo-file'])$(id).addEventListener('change',async()=>{
@@ -129,9 +131,7 @@ async function boot() {
   resolve();await new Promise(r=>releaseLock=r);
  }).catch(reject));
  await chat.init();if(chat.state){render();chat.start();}
- $('create-form').querySelector('button').disabled=false;
- $('create-form').querySelector('button').textContent='Начать общение ↗';
- $('restore-open').disabled=false;
+ $('create-form').querySelector('[type=submit]').disabled=false;$('restore-open').disabled=false;$('boot-status').hidden=true;
  setupWorker().catch(()=>{});
 }
 window.addEventListener('online',()=>chat.reconnect());

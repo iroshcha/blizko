@@ -1,4 +1,4 @@
-import {newIdentity,parseContact,randomID,goJSON,signFrame,verifyFrame,login,seal,open,utf8} from './protocol.js';
+import {newIdentity,parseContact,randomID,goJSON,signFrame,verifyFrame,login,seal,open,utf8,hash} from './protocol.js';
 import {Vault} from './storage.js';
 
 export class Chat extends EventTarget {
@@ -39,7 +39,7 @@ export class Chat extends EventTarget {
   text=text.trim();if(!text||utf8(text).length>4000)throw Error('Сообщение должно содержать от 1 до 4000 байт текста');
   await this.mutate(s=>{
    const contact=s.contacts.find(c=>c.id===peer);if(!contact)throw Error('Контакт не найден');
-   if(s.messages.length>=2000)throw Error('Достигнут лимит истории: 2000 сообщений');
+   if(s.messages.filter(m=>!m.archived).length>=2000||s.messages.length>=40000)throw Error('История заполнена. Откройте настройки и очистите сохранённые сообщения.');
    if(s.messages.filter(m=>m.out&&!m.delivered&&!m.cancelled).length>=200)throw Error('В очереди уже 200 сообщений');
    const id=randomID(), packet=seal({v:2,id,from:s.identity.id,to:peer,kind:'text',text},contact,s.identity);
    s.messages.push({id,peer,text,out:true,delivered:false,time:Date.now(),packet});s.drafts[peer]='';
@@ -48,6 +48,18 @@ export class Chat extends EventTarget {
  }
  draft(peer,value) {return this.mutate(s=>{if(utf8(value).length>16000)throw Error('Черновик слишком длинный');s.drafts[peer]=value;});}
  markRead(peer) {return this.mutate(s=>{s.read[peer]=Date.now();});}
+ async clearHistory() {
+  return this.mutate(async s=>{
+   const retained=[];let removed=0;
+   for(const m of s.messages) {
+    // Keep every unsent message (including cancelled ones) and receipt tombstones.
+    if(m.archived||(m.out&&!m.delivered)){retained.push(m);continue;}
+    if(!m.out)retained.push({id:m.id,peer:m.peer,out:false,delivered:true,time:m.time,archived:true,digest:await hash(utf8(m.text))});
+    removed++;
+   }
+   s.messages=retained;return removed;
+  });
+ }
  async cancel(peer,id) {await this.mutate(s=>{const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.out);if(m&&!m.delivered)m.cancelled=true;});}
  async retryMessage(peer,id) {await this.mutate(s=>{const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.out);if(m&&!m.delivered)m.cancelled=false;});this.retry.delete(peer);this.flush();}
  async accept(from,data) {
@@ -58,11 +70,12 @@ export class Chat extends EventTarget {
   let p;
   try {p=open(JSON.parse(data),c,this.state.identity);if(p.kind!=='text')throw Error();}
   catch{return {status:403,code:'invalid_message'};}
+  const digest=await hash(utf8(p.text));
   try {
    await this.mutate(s=>{
     const old=s.messages.find(m=>!m.out&&m.peer===c.id&&m.id===p.id);
-    if(old) {if(old.text!==p.text)throw Error('Повтор с другим содержимым');return;}
-    if(s.messages.length>=2000)throw Object.assign(Error(),{full:true});
+    if(old) {if(old.archived?old.digest!==digest:old.text!==p.text)throw Error('Повтор с другим содержимым');return;}
+    if(s.messages.filter(m=>!m.archived).length>=2000||s.messages.length>=40000)throw Object.assign(Error(),{full:true});
     s.messages.push({id:p.id,peer:c.id,text:p.text,out:false,delivered:true,time:Date.now()});
    });
   }catch(e){return {status:e.full?507:503,code:e.full?'history_full':'storage_failed'};}

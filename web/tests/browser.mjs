@@ -7,13 +7,13 @@ import {setTimeout as pause} from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import QRCode from 'qrcode';
 
-const root=resolve(import.meta.dirname,'../..'), output=join(root,'.tools/web-checks');await mkdir(output,{recursive:true});
-const base=process.env.BLIZKO_WEB_TEST_URL||'http://127.0.0.1:39343';
-let server=process.env.BLIZKO_WEB_TEST_URL?null:spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39343','-web-origin',base],{windowsHide:true});
+const root=resolve(import.meta.dirname,'../..'), output=process.env.BLIZKO_WEB_TEST_OUTPUT||join(root,'.tools/web-checks');await mkdir(output,{recursive:true});
+const base=process.env.BLIZKO_WEB_TEST_URL||'http://127.0.0.1:39443';
+let server=process.env.BLIZKO_WEB_TEST_URL?null:spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39443','-web-origin',base],{windowsHide:true});
 let serverLog='';server?.stderr.on('data',b=>serverLog+=b);
 async function until(fn,label,timeout=30000){const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await pause(150);}throw Error('Timeout: '+label);}
 await until(async()=>{try{return (await fetch(base+'/healthz')).status===204;}catch{return false;}},'server');
-async function visit(p){await p.goto(base+'/web/');const gate=p.getByRole('button',{name:'Посетить',exact:true});if(await gate.isVisible())await gate.click();await p.waitForLoadState('load');}
+async function visit(p){await p.goto(base+'/web/');const gate=p.getByRole('button',{name:'Посетить',exact:true});if(await gate.isVisible())await gate.click();}
 const summary=[];
 try {
  for(const name of (process.env.BLIZKO_TEST_BROWSERS||'chromium,webkit').split(',')) {
@@ -24,7 +24,14 @@ try {
   let peerLog='';peer.stderr.on('data',b=>peerLog+=b);const answers=[];createInterface({input:peer.stdout}).on('line',l=>{answers.shift()?.(JSON.parse(l));});
   const command=req=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Native peer timeout '+peerLog)),15000);answers.push(v=>{clearTimeout(timer);v.error?reject(Error(v.error)):resolve(v.value);});peer.stdin.write(JSON.stringify(req)+'\n');});
   try {
-   await visit(page);await page.locator('#my-name').fill('Айфон · тест');await page.locator('#create-form button').click();
+   await visit(page);await page.locator('#my-name').fill('Айфон · тест');
+   // Failing the state write after key insertion must abort both records.
+   await page.evaluate(()=>{window.originalPut=IDBObjectStore.prototype.put;IDBObjectStore.prototype.put=function(...args){if(args[1]==='state')throw new DOMException('Quota full','QuotaExceededError');return window.originalPut.apply(this,args);};});
+   await page.locator('#create-form button').click();await page.locator('#toast').waitFor({state:'visible'});
+   const partial=await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('blizko-web-v1');r.onerror=()=>reject(r.error);r.onsuccess=()=>{const db=r.result,tx=db.transaction('vault'),q=tx.objectStore('vault').getAllKeys();tx.oncomplete=()=>{db.close();resolve(q.result);};};}));
+   assert.deepEqual(partial,[],'failed creation must leave no orphan key');
+   await page.evaluate(()=>{IDBObjectStore.prototype.put=window.originalPut;});
+   await page.locator('#create-form button').click();
    await page.locator('#app').waitFor({state:'visible'});await until(()=>page.locator('#status').textContent().then(t=>t.includes('Подключено')),'browser authenticated');
    await page.locator('#qr-open').click();const code=await page.locator('#own-code').inputValue();const identity=JSON.parse(Buffer.from(code.slice(9),'base64url'));await page.locator('#qr-dialog [data-close]').click();
    await command({op:'add',name:'Web',code});const nativeCode=await command({op:'code'});
@@ -40,6 +47,12 @@ try {
    await until(async()=> (await command({op:'snapshot'})).messages.some(m=>m.out&&m.delivered),'native receipt');
    await page.screenshot({animations:'disabled',path:join(output,name+'-chat.png')});
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'mobile horizontal overflow');
+   // Simulate a newer page committing after this page acquired its snapshot.
+   await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('blizko-web-v1');r.onsuccess=()=>{const db=r.result,tx=db.transaction('vault','readwrite'),s=tx.objectStore('vault'),q=s.get('revision');q.onsuccess=()=>s.put(q.result+1,'revision');tx.oncomplete=()=>{db.close();resolve();};tx.onabort=()=>reject(tx.error);};}));
+   await page.locator('#message').fill('Не перезаписывать новую историю');
+   await until(()=>page.locator('#toast').textContent().then(t=>t.includes('другой вкладке')),'stale state rejected');
+   await page.reload();await page.getByRole('button',{name:'Открыть чат: Компьютер'}).click();
+   assert.equal(await page.locator('#message').inputValue(),'','stale draft did not overwrite newer state');
    // A failed IndexedDB commit must never create a receipt or erase the draft.
    await page.evaluate(()=>{window.originalPut=IDBObjectStore.prototype.put;IDBObjectStore.prototype.put=function(...args){if(args[1]==='state')throw new DOMException('Quota full','QuotaExceededError');return window.originalPut.apply(this,args);};});
    await command({op:'send',peer:identity.id,text:'Сначала сохранение, потом подтверждение'});await pause(2500);
@@ -57,12 +70,6 @@ try {
    const second=await context.newPage();await second.goto(base+'/web/');await second.locator('#fatal').waitFor({state:'visible'});assert.match(await second.locator('#fatal-text').textContent(),/другой вкладке/);await second.close();
    const raw=await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('blizko-web-v1');r.onsuccess=()=>{const db=r.result,tx=db.transaction('vault'),s=tx.objectStore('vault'),a=s.get('state'),b=s.get('key');tx.oncomplete=()=>resolve({encrypted:a.result.body instanceof ArrayBuffer,extractable:b.result.extractable,raw:JSON.stringify(a.result)});tx.onerror=()=>reject(tx.error);};}));
    assert.equal(raw.encrypted,true);assert.equal(raw.extractable,false);assert.ok(!raw.raw.includes(hello));
-   // Simulate a late write from an old page generation: stale state cannot overwrite it.
-   await page.getByRole('button',{name:'Открыть чат: Компьютер'}).click();await page.locator('#message').fill('Не перезаписать более новую историю');await pause(400);
-   await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('blizko-web-v1');r.onsuccess=()=>{const tx=r.result.transaction('vault','readwrite'),s=tx.objectStore('vault'),read=s.get('revision');read.onsuccess=()=>s.put(read.result+1,'revision');tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);};}));
-   await page.locator('#send').click();await until(()=>page.locator('#toast').textContent().then(t=>t.includes('Хранилище изменено')),'stale write refused');
-   assert.equal(await page.locator('#messages').getByText('Не перезаписать более новую историю',{exact:true}).count(),0);
-   await page.reload();await page.getByRole('button',{name:'Открыть чат: Компьютер'}).click();assert.equal(await page.locator('#message').inputValue(),'Не перезаписать более новую историю');await page.locator('#back').click();
    // Download and restore the actual encrypted backup through the interface.
    await page.locator('#settings-open').click();await page.locator('#backup-open').click();await page.locator('#backup-password').fill('backup-test-password');
    const download=page.waitForEvent('download');await page.locator('#backup-submit').click();const file=join(temp,'backup.json');await (await download).saveAs(file);
@@ -75,10 +82,15 @@ try {
    assert.equal(workerState.controlled,true,'service worker controls the page');
    if(name==='webkit' && server) {server.kill();await pause(1000);} else await restored.setOffline(true);
    await restoredPage.reload();await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();await restoredPage.locator('#messages').getByText(hello,{exact:true}).waitFor();
-   if(name==='webkit' && server) {server=spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39343','-web-origin',base],{windowsHide:true});server.stderr.on('data',b=>serverLog+=b);} else await restored.setOffline(false);
-   await restoredPage.locator('#back').click();await restoredPage.screenshot({animations:'disabled',path:join(output,name+'-contacts.png')});await restored.close();
-   assert.deepEqual(errors,[],'browser errors');summary.push(name+': PASS — Go interop, encrypted receipts, QR photo, storage failure, offline outbox, reload, draft, tab lock/CAS, backup/restore, offline shell, mobile layout');console.log(summary.at(-1));
-  }catch(e){console.log('Browser errors:',errors);await page.screenshot({animations:'disabled',path:join(output,name+'-failure.png')}).catch(()=>{});throw e;}
+   if(name==='webkit' && server) {server=spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39443','-web-origin',base],{windowsHide:true});server.stderr.on('data',b=>serverLog+=b);} else await restored.setOffline(false);
+   await restoredPage.locator('#back').click();await restoredPage.screenshot({animations:'disabled',path:join(output,name+'-contacts.png')});
+   await restoredPage.locator('#settings-open').click();await restoredPage.locator('#clear-open').click();await restoredPage.locator('#clear-confirm').click();await restoredPage.locator('#clear-dialog').waitFor({state:'hidden'});await restoredPage.locator('#settings-dialog [data-close]').click();
+   await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();assert.equal(await restoredPage.locator('#messages .bubble').count(),0,'cleared history is hidden');
+   assert.equal(await restoredPage.locator('#message').inputValue(),'Черновик после перезапуска','clearing preserves drafts');
+   await restoredPage.reload();await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();assert.equal(await restoredPage.locator('#messages .bubble').count(),0,'cleared history remains cleared after reopening');
+   await restored.close();
+   assert.deepEqual(errors,[],'browser errors');summary.push(name+': PASS — Go interop, encrypted receipts, QR photo, storage failure, offline outbox, reload, draft, tab lock/CAS, atomic profile creation, backup/restore, offline shell, history clearing, mobile layout');console.log(summary.at(-1));
+  }catch(e){await page.screenshot({animations:'disabled',path:join(output,name+'-failure.png')}).catch(()=>{});throw e;}
   finally{peer.stdin.end();peer.kill();await browser.close();}
  }
  await writeFile(join(output,'result.txt'),summary.join('\n')+'\n');
