@@ -24,12 +24,17 @@ public final class QrAndUpdateTest extends ReceiveStartupTest {
         try{
             if(arguments!=null&&"true".equals(arguments.getString("transportOnly"))){ServerDeliveryCheck.run(getTargetContext(),testServer);result.putString("stream","PASS: Android encrypted bidirectional server delivery, offline queue and contact probe");finish(Activity.RESULT_OK,result);return;}
             if(arguments!=null&&"true".equals(arguments.getString("stopOnly"))){
+                // Instrumentation starts a fresh background process. Model a user
+                // opening the app before explicit stop, as required by Android 15.
+                MainActivity stopActivity=(MainActivity)startActivitySync(new Intent(getTargetContext(),MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                waitForIdleSync();
                 getTargetContext().startService(new Intent(getTargetContext(),ChatService.class).setAction("STOP"));
                 long until=System.currentTimeMillis()+10000;
                 while(getTargetContext().getSharedPreferences("connection",Context.MODE_PRIVATE).getBoolean("receiveEnabled",false)&&System.currentTimeMillis()<until)Thread.sleep(100);
                 check(!getTargetContext().getSharedPreferences("connection",Context.MODE_PRIVATE).getBoolean("receiveEnabled",false),"Explicit stop retained restart intention");
                 ChatApp app=(ChatApp)getTargetContext().getApplicationContext();app.io.submit(()->{}).get(60,java.util.concurrent.TimeUnit.SECONDS);
                 check(!new JSONObject(app.node.status()).getBoolean("enabled"),"Explicit stop left node enabled");
+                runOnMainSync(stopActivity::finish);
                 result.putString("stream","OK: explicit stop disables receive and automatic restart");finish(Activity.RESULT_OK,result);return;
             }
             testReceiveStartsWithoutClosingActivity();testReceiveStartsWithoutClosingActivity();testQr();testPagedHistoryAndDraft();testConversationTools();testApk();testAutomaticUpdates();ServerDeliveryCheck.run(getTargetContext(),testServer);
