@@ -4,6 +4,7 @@ package main
 import (
 	"blizko/core/diagnostics"
 	"blizko/core/transport"
+	"blizko/core/webapp"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -21,7 +22,11 @@ func main() {
 	dir := flag.String("data", "diagnostic-data", "Private diagnostic directory")
 	token := flag.String("token", "", "Optional diagnostic token file; empty disables collection")
 	initToken := flag.Bool("init", false, "Create token file without overwriting")
+	webOrigin := flag.String("web-origin", "", "Exact HTTPS origin allowed for the web client; empty disables browser sockets")
 	flag.Parse()
+	if err := webapp.ValidateOrigin(*webOrigin); err != nil {
+		log.Fatal(err)
+	}
 	if *initToken {
 		b := make([]byte, 32)
 		if _, e := rand.Read(b); e != nil {
@@ -52,10 +57,18 @@ func main() {
 	defer listener.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	broker := transport.NewServer()
+	broker := transport.NewServerWithBrowserOrigin(*webOrigin)
 	defer broker.Close()
 	mux := http.NewServeMux()
 	mux.Handle(transport.Path, broker)
+	mux.Handle("/web/", webapp.Handler(*webOrigin))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Redirect(w, r, "/web/", http.StatusTemporaryRedirect)
+	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			w.WriteHeader(405)

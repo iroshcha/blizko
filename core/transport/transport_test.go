@@ -16,6 +16,35 @@ import (
 )
 
 func seed(n byte) (s [32]byte) { s[0] = n; return }
+func TestExplicitBrowserOrigin(t *testing.T) {
+	broker := NewServerWithBrowserOrigin("https://chat.example")
+	defer broker.Close()
+	host := httptest.NewServer(broker)
+	defer host.Close()
+	for _, origin := range []string{"https://evil.test", "http://chat.example", "https://chat.example.evil", "null", "https://chat.example:443"} {
+		r, _ := http.NewRequest("GET", host.URL+Path, nil)
+		r.Header.Set("Origin", origin)
+		response, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != 403 {
+			t.Fatal("origin allowed", origin)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, host.URL+Path, &websocket.DialOptions{HTTPHeader: http.Header{"Origin": []string{"https://chat.example"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	var h hello
+	if err = readJSON(ctx, c, &h); err != nil || h.Type != "challenge" {
+		t.Fatal("trusted browser did not receive challenge", err)
+	}
+}
 func TestSignaturesCannotChangePeerPayloadOrReceipt(t *testing.T) {
 	s := seed(1)
 	key := ed25519.NewKeyFromSeed(s[:])

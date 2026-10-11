@@ -16,10 +16,11 @@ import (
 // No messages are stored on disk. A bounded queue only bridges live sockets;
 // offline messages and retries remain in the sender's encrypted local outbox.
 type Server struct {
-	mu      sync.Mutex
-	clients map[string]*peer
-	slots   chan struct{}
-	closed  bool
+	mu            sync.Mutex
+	clients       map[string]*peer
+	slots         chan struct{}
+	closed        bool
+	browserOrigin string // Explicit deployment origin; empty preserves native-only access.
 }
 type peer struct {
 	conn    *websocket.Conn
@@ -31,6 +32,14 @@ type peer struct {
 
 func NewServer() *Server {
 	return &Server{clients: make(map[string]*peer), slots: make(chan struct{}, 128)}
+}
+
+// NewServerWithBrowserOrigin allows one exact, trusted web application origin.
+// Native clients still authenticate identically without an Origin header.
+func NewServerWithBrowserOrigin(origin string) *Server {
+	s := NewServer()
+	s.browserOrigin = origin
+	return s
 }
 func (s *Server) Close() {
 	s.mu.Lock()
@@ -46,8 +55,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// Browser pages cannot enroll a background connection from a malicious origin.
-	if r.Header.Get("Origin") != "" {
+	// Never infer trust from Host or forwarded headers supplied by a tunnel.
+	if origin := r.Header.Get("Origin"); origin != "" && (s.browserOrigin == "" || origin != s.browserOrigin) {
 		http.Error(w, "browser origin not allowed", 403)
 		return
 	}
@@ -58,7 +67,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "busy", 503)
 		return
 	}
-	c, e := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
+	// The complete origin (scheme + host + port) was checked above, not a glob.
+	c, e := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled, InsecureSkipVerify: true})
 	if e != nil {
 		return
 	}

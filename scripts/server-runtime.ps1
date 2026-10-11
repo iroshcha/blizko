@@ -99,6 +99,7 @@ try {
             New-Item -ItemType Directory -Force -Path $logs | Out-Null
             $job = New-Object BlizkoRelayProcessJob
             $serverArguments = @('-listen', '127.0.0.1:3340')
+            if ($hostname) { $serverArguments += @('-web-origin', ('https://' + $hostname)) }
             $tokenFile = Join-Path $serverRoot 'diagnostics-private\access-code.txt'
             if (Test-Path -LiteralPath $tokenFile -PathType Leaf) { $serverArguments += @('-token', ('"' + $tokenFile + '"'), '-data', ('"' + (Join-Path $serverRoot 'diagnostics-private\journal') + '"')) }
             $relayProcess = $null

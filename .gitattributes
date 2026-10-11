@@ -1,0 +1,4 @@
+web/** text eol=lf
+core/webapp/assets/** text eol=lf
+web/**/*.png binary
+core/webapp/assets/*.png binary

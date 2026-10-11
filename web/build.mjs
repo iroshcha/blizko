@@ -1,0 +1,17 @@
+import {build} from 'esbuild';
+import {readFile,writeFile,mkdir,copyFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+const out=new URL('../core/webapp/assets/',import.meta.url);
+await mkdir(out,{recursive:true});
+await build({entryPoints:[new URL('./src/app.js',import.meta.url).pathname.replace(/^\/(\w:)/,'$1')],bundle:true,minify:true,format:'esm',target:['safari16.4'],outfile:new URL('app.js',out).pathname.replace(/^\/(\w:)/,'$1'),legalComments:'eof'});
+for(const name of ['index.html','style.css','manifest.webmanifest','icon.svg'])await writeFile(new URL(name,out),(await readFile(new URL('./src/'+name,import.meta.url),'utf8')).replace(/\r\n/g,'\n'));
+for(const name of ['icon-192.png','icon-512.png'])await copyFile(new URL('./src/'+name,import.meta.url),new URL(name,out));
+const digest=createHash('sha256');for(const name of ['app.js','style.css','index.html','manifest.webmanifest','icon.svg','icon-192.png','icon-512.png'])digest.update(await readFile(new URL(name,out)));
+const worker=(await readFile(new URL('./src/sw.js',import.meta.url),'utf8')).replace(/\r\n/g,'\n');
+digest.update(worker);
+const version=digest.digest('hex').slice(0,16);
+await writeFile(new URL('sw.js',out),worker.replace('__BUILD__',version));
+let licenses='Blizko Web — third party licenses\n\n';
+for(const [pkg,file] of [['tweetnacl','LICENSE'],['jsqr','LICENSE'],['qrcode','license'],['dijkstrajs','LICENSE.md'],['pngjs','LICENSE']])licenses+='\n'+pkg+'\n'+await readFile(new URL('./node_modules/'+pkg+'/'+file,import.meta.url),'utf8');
+await writeFile(new URL('licenses.txt',out),licenses);
+console.log('Built web shell '+version);
