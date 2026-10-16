@@ -24,7 +24,11 @@ try {
   let peerLog='';peer.stderr.on('data',b=>peerLog+=b);const answers=[];createInterface({input:peer.stdout}).on('line',l=>{answers.shift()?.(JSON.parse(l));});
   const command=req=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Native peer timeout '+peerLog)),15000);answers.push(v=>{clearTimeout(timer);v.error?reject(Error(v.error)):resolve(v.value);});peer.stdin.write(JSON.stringify(req)+'\n');});
   try {
-   await visit(page);await page.locator('#my-name').fill('Айфон · тест');
+   await visit(page);
+   await page.screenshot({animations:'disabled',path:join(output,name+'-welcome.png')});
+   await page.setViewportSize({width:1280,height:900});
+   await page.screenshot({animations:'disabled',path:join(output,name+'-welcome-desktop.png')});
+   await page.setViewportSize({width:390,height:844});await page.locator('#my-name').fill('Айфон · тест');
    // Failing the state write after key insertion must abort both records.
    await page.evaluate(()=>{window.originalPut=IDBObjectStore.prototype.put;IDBObjectStore.prototype.put=function(...args){if(args[1]==='state')throw new DOMException('Quota full','QuotaExceededError');return window.originalPut.apply(this,args);};});
    await page.locator('#create-form button').click();await page.locator('#toast').waitFor({state:'visible'});
@@ -34,10 +38,25 @@ try {
    await page.locator('#create-form button').click();
    await page.locator('#app').waitFor({state:'visible'});await until(()=>page.locator('#status').textContent().then(t=>t.includes('Подключено')),'browser authenticated');
    assert.equal(await page.locator('#toast').isVisible(),false,'successful creation clears previous failure');
-   await page.locator('#qr-open').click();const code=await page.locator('#own-code').inputValue();const identity=JSON.parse(Buffer.from(code.slice(9),'base64url'));await page.locator('#qr-dialog [data-close]').click();
+   await page.screenshot({animations:'disabled',path:join(output,name+'-empty.png')});
+   // Native dialog focus must restore on close, including interrupted transitions.
+   await page.locator('#settings-open').focus();await page.locator('#settings-open').press('Enter');
+   await page.locator('#settings-dialog').waitFor({state:'visible'});await page.keyboard.press('Escape');
+   await until(()=>page.locator('#settings-open').evaluate(e=>e===document.activeElement),'dialog restores keyboard focus');
+   for(let i=0;i<3;i++){await page.locator('#settings-open').press('Enter');await page.keyboard.press('Escape');}
+   assert.equal(await page.locator('#settings-dialog').evaluate(e=>e.open),false,'rapid toggles leave native dialog closed');
+   await page.locator('#qr-open').click();const code=await page.locator('#own-code').inputValue();const identity=JSON.parse(Buffer.from(code.slice(9),'base64url'));
+   // Keep clipboard checks isolated from the user's system clipboard.
+   await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.copiedContact=value;}}}));
+   await page.locator('#copy-code').click();
+   assert.equal(await page.locator('#copy-code [data-label]').textContent(),'Код скопирован','copy confirms on the originating button');
+   assert.equal(await page.evaluate(()=>window.copiedContact),code,'copy preserves contact code');
+   await page.locator('#qr-dialog [data-close]').click();
+   await until(()=>page.locator('#qr-open').evaluate(e=>e===document.activeElement),'async QR dialog restores focus');
    await command({op:'add',name:'Web',code});const nativeCode=await command({op:'code'});
    const qr=join(temp,'native-qr.png');await QRCode.toFile(qr,nativeCode,{width:900,margin:4});
    await page.locator('#add-open').click();
+   await page.screenshot({animations:'disabled',path:join(output,name+'-add-start.png')});
    await page.locator('#contact-code').fill('not-a-contact');await page.locator('#add-submit').click();await page.locator('#add-error').waitFor({state:'visible'});
    assert.equal(await page.locator('#add-step-1').isVisible(),true,'invalid QR stays at step one');
    await page.locator('#photo-file').setInputFiles(qr);
@@ -47,6 +66,11 @@ try {
    await page.locator('#add-submit').click();await page.locator('#add-step-3').waitFor({state:'visible'});
    assert.equal(await page.locator('#add-own-code').inputValue(),code,'wizard shows the original identity');
    await page.screenshot({animations:'disabled',path:join(output,name+'-add-contact.png')});
+   await page.evaluate(()=>{navigator.clipboard.writeText=async()=>{throw new DOMException('Denied','NotAllowedError');};});
+   await page.locator('#add-copy').click();
+   assert.equal(await page.locator('#add-own-code').isVisible(),true,'clipboard denial reveals the manual fallback');
+   assert.equal(await page.locator('#add-own-code').evaluate(e=>e.selectionStart===0&&e.selectionEnd===e.value.length),true,'fallback selects the full contact code');
+   await page.locator('#add-step-3 .code-details summary').click();
    await page.locator('#add-probe').click();await until(()=>page.locator('#add-result').textContent().then(t=>t.includes('Связь проверена')),'wizard checks both contacts');
    await page.locator('#add-done').click();
    await page.locator('#chat').waitFor({state:'visible'});
@@ -69,9 +93,23 @@ try {
    await page.setViewportSize({width:1280,height:900});
    await page.screenshot({animations:'disabled',path:join(output,name+'-desktop.png')});
    assert.equal(await page.locator('#sidebar').isVisible(),true,'desktop keeps contacts alongside chat');
+   for(const width of [320,768]){
+    await page.setViewportSize({width,height:844});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`${width}px page overflow`);
+    // WebKit dispatches visualViewport.resize after setViewportSize resolves.
+    await until(()=>page.locator('#send').evaluate(e=>{const r=e.getBoundingClientRect();return r.right<=innerWidth&&r.bottom<=innerHeight;}),`${width}px composer settles inside viewport`,3000);
+    await page.screenshot({animations:'disabled',path:join(output,`${name}-chat-${width}.png`)});
+   }
+   await page.setViewportSize({width:1280,height:900});
    await page.locator('#message').fill('Отправлено сочетанием клавиш');await page.locator('#message').press('Control+Enter');
    await until(async()=> (await command({op:'snapshot'})).messages.filter(m=>m.text==='Отправлено сочетанием клавиш').length===1,'keyboard sends exactly one message');
    await page.setViewportSize({width:390,height:844});
+   await page.emulateMedia({reducedMotion:'reduce'});
+   assert.equal(await page.locator('.bubble').first().evaluate(e=>getComputedStyle(e).animationName),'none','reduced motion disables message movement');
+   await page.locator('#back').click();await page.locator('#add-open').click();
+   assert.equal(await page.locator('#add-dialog').evaluate(e=>getComputedStyle(e).transform),'none','reduced motion disables dialog travel');
+   await page.locator('#add-dialog [data-close]').click();await page.getByRole('button',{name:'Открыть чат: Компьютер'}).click();
+   await page.emulateMedia({reducedMotion:'no-preference'});
    for(let i=0;i<6;i++)await command({op:'send',peer:identity.id,text:`Проверка прокрутки ${i}\n`+'Строка длинного сообщения для проверки истории.\n'.repeat(8)});
    await until(()=>page.locator('#messages .bubble-text').allTextContents().then(a=>a.some(s=>s.startsWith('Проверка прокрутки 5'))),'history exceeds viewport');
    await page.locator('#messages').evaluate(box=>{box.scrollTop=0;const text=box.querySelector('.bubble-text').firstChild;const range=document.createRange();range.setStart(text,0);range.setEnd(text,6);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);window.selectedText=text;window.scrollBefore=box.scrollTop;});
@@ -132,7 +170,7 @@ try {
    assert.equal(await restoredPage.locator('#message').inputValue(),'Черновик после перезапуска','clearing preserves drafts');
    await restoredPage.reload();await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();assert.equal(await restoredPage.locator('#messages .bubble').count(),0,'cleared history remains cleared after reopening');
    await restored.close();
-   assert.deepEqual(errors,[],'browser errors');summary.push(name+': PASS — Go interop, receipts, three-step QR wizard, multiline composer, byte limit, keyboard send, stable DOM/selection/scroll, new-message jump, desktop/mobile layout, storage failure, outbox, drafts, tab lock/CAS, backup/restore, offline shell, history clearing');console.log(summary.at(-1));
+   assert.deepEqual(errors,[],'browser errors');summary.push(name+': PASS — Go interop, receipts, three-step QR wizard, clipboard success/denial, native dialog focus/rapid toggles, reduced motion, 320/390/768/1280px layouts, multiline composer, byte limit, keyboard send, stable DOM/selection/scroll, new-message jump, storage failure, outbox, drafts, tab lock/CAS, backup/restore, offline shell, history clearing');console.log(summary.at(-1));
   }catch(e){await page.screenshot({animations:'disabled',path:join(output,name+'-failure.png')}).catch(()=>{});throw e;}
   finally{peer.stdin.end();peer.kill();await browser.close();}
  }

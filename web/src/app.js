@@ -14,8 +14,12 @@ function errorText(e){return e?.name==='QuotaExceededError'?'Недостато�
 function fail(e){toast(errorText(e));}
 function clearToast(){clearTimeout(toastTimer);$('toast').hidden=true;}
 function fatal(e){$('welcome').hidden=true;$('app').hidden=true;$('fatal').hidden=false;$('fatal-text').textContent=e.message;}
-function dialog(id){clearToast();$(id).showModal();}
-function action(id,fn){$(id).addEventListener('click',async()=>{const b=$(id);b.disabled=true;try{await fn();}catch(e){fail(e);}finally{b.disabled=false;render();}});}
+function dialog(id,opener){
+ clearToast();const modal=$(id);
+ if(opener)modal.addEventListener('close',()=>{if(!modal.open&&opener.isConnected&&!opener.disabled&&opener.getClientRects().length)opener.focus({preventScroll:true});},{once:true});
+ modal.showModal();
+}
+function action(id,fn){$(id).addEventListener('click',async()=>{const b=$(id);try{const pending=fn();if(pending?.then){b.disabled=true;await pending;}}catch(e){fail(e);}finally{b.disabled=false;render();}});}
 function form(id,fn){$(id).addEventListener('submit',async e=>{e.preventDefault();const button=$(id).querySelector('[type=submit]');button.disabled=true;try{await fn();}catch(error){fail(error);}finally{button.disabled=false;}});}
 function initial(name){return [...name][0]?.toLocaleUpperCase('ru')||'·';}
 const conversation=new ConversationView($('messages'),$('new-messages'),{
@@ -32,10 +36,10 @@ function renderComposer() {
  const input=$('message'),view=composerView(input.value,ui.state.sending,ui.state.sendError);
  // Hidden textareas have no measurable scrollHeight; resize after opening a chat.
  if(ui.state.peer){input.style.height='auto';input.style.height=Math.min(160,input.scrollHeight)+'px';input.style.overflowY=input.scrollHeight>160?'auto':'hidden';}
- $('send').disabled=view.disabled;setText($('send'),ui.state.sending?'…':'↑');
+ $('send').disabled=view.disabled;$('send').dataset.busy=String(ui.state.sending);
  $('send').setAttribute('aria-label',ui.state.sending?'Сохраняем сообщение':'Отправить');
  $('composer-error').hidden=!view.error;setText($('composer-error'),view.error);input.setAttribute('aria-invalid',String(!!view.error));
- const shortcut=matchMedia('(pointer:coarse)').matches?'↵ — новая строка':'Ctrl/⌘ + Enter — отправить';
+ const shortcut=matchMedia('(pointer:coarse)').matches?'Enter — новая строка':'Ctrl/⌘ + Enter — отправить';
  setText($('composer-hint'),ui.state.sending?'Сохраняем сообщение…':chat.online?shortcut:'Можно писать без связи — сообщение останется в очереди');
 }
 function render() {
@@ -117,7 +121,18 @@ function renderAdd() {
  for(const b of $('add-dialog').querySelectorAll('[data-close],.scan-buttons button'))b.disabled=a.busy;
 }
 const drawQR=(canvas,code)=>QRCode.toCanvas(canvas,code,{width:640,margin:4,errorCorrectionLevel:'M',color:{dark:'#163f36',light:'#ffffff'}});
-async function copyCode(code) {try{await navigator.clipboard.writeText(code);toast('Код скопирован');}catch{toast('Копирование недоступно. Покажите QR или выделите код вручную.');}}
+const copyFeedback=new Map();
+async function copyCode(code,buttonId,fieldId) {
+ const button=$(buttonId),label=button.querySelector('[data-label]');
+ try {
+  await navigator.clipboard.writeText(code);
+  clearTimeout(copyFeedback.get(button));setText(label,'Код скопирован');button.dataset.copied='true';
+  copyFeedback.set(button,setTimeout(()=>{setText(label,button.dataset.copyLabel);delete button.dataset.copied;copyFeedback.delete(button);},2200));
+ }catch{
+  const field=$(fieldId),details=field.closest('details');if(details)details.open=true;
+  field.focus();field.select();toast('Выделили код: выберите «Скопировать».');
+ }
+}
 action('add-open',()=>{$('add-form').reset();setText($('add-code-status'),'');ui.dispatch({type:'add-reset'});dialog('add-dialog');});
 $('add-dialog').addEventListener('cancel',e=>{if(ui.state.add.busy)e.preventDefault();});
 $('add-form').addEventListener('submit',async e=>{
@@ -138,7 +153,7 @@ $('add-form').addEventListener('submit',async e=>{
  finally{ui.dispatch({type:'add',value:{busy:false}});if(ui.state.add.step===2)$('contact-name').focus();}
 });
 action('add-previous',()=>ui.dispatch({type:'add',value:{step:1,error:''}}));
-action('add-copy',()=>copyCode(contactCode(chat.state.identity)));
+action('add-copy',()=>copyCode(contactCode(chat.state.identity),'add-copy','add-own-code'));
 action('add-probe',async()=>{
  ui.dispatch({type:'add',value:{busy:true,error:'',verified:false}});
  try{await chat.probe(ui.state.add.peer);ui.dispatch({type:'add',value:{verified:true}});}
@@ -148,11 +163,11 @@ action('add-probe',async()=>{
 action('add-done',async()=>{$('add-dialog').close();await openChat(ui.state.add.peer);});
 action('qr-open',async()=>{
  const code=contactCode(chat.state.identity);$('qr-name').textContent=chat.state.identity.name;$('own-code').value=code;
- await drawQR($('qr-canvas'),code);dialog('qr-dialog');
+ await drawQR($('qr-canvas'),code);dialog('qr-dialog',$('qr-open'));
 });
 
 
-action('copy-code',async()=>{try{await navigator.clipboard.writeText($('own-code').value);toast('Код скопирован');}catch{$('own-code').focus();$('own-code').select();toast('Выделили код: выберите «Скопировать».');}});
+action('copy-code',()=>copyCode($('own-code').value,'copy-code','own-code'));
 action('settings-open',()=>{$('profile-name').textContent=chat.state.identity.name;dialog('settings-dialog');});
 action('clear-open',()=>dialog('clear-dialog'));
 action('clear-confirm',async()=>{const removed=await chat.clearHistory();$('clear-dialog').close();toast(`Очищено сообщений: ${removed}. Неотправленные сообщения и черновики сохранены.`);});

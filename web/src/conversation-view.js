@@ -54,7 +54,11 @@ export class ConversationView {
      cancel.title='Уже отправленное сообщение может быть доставлено';
      actions.append(retry,cancel);node.append(actions);
     }
-    if(!changed){if(m.out)newOutgoing=true;else this.unseen++;}
+    // Animate only an arriving message, never an entire restored history.
+    if(!changed){
+     if(m.out)newOutgoing=true;else this.unseen++;
+     if(m.out||follow){node.classList.add('message-arrival');setTimeout(()=>node.classList.remove('message-arrival'),200);}
+    }
    }
    // Text nodes are never rewritten on delivery, connection or draft updates.
    const status=deliveryView(m,{online:chat.online,sending:chat.activeMessages.get(peer)===m.id,issue:chat.issues.get(peer)});

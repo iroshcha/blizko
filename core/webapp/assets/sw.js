@@ -1,5 +1,5 @@
 /* Shell only: chat traffic, keys, QR and history are never put in this cache. */
-const CACHE='blizko-web-bfac91cca61eb71c';
+const CACHE='blizko-web-71dfc8a3006b2b6c';
 const FILES=['./','./index.html','./app.js','./style.css','./manifest.webmanifest','./icon.svg','./icon-192.png','./icon-512.png'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES))));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('blizko-web-')&&k!==CACHE).map(k=>caches.delete(k))))));
