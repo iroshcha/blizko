@@ -117,3 +117,36 @@ func TestHTTPCorruptReceiptRetriesWithoutDuplicate(t *testing.T) {
 		t.Fatal("valid retry failed or duplicated message")
 	}
 }
+
+func TestRetryCancelledMessageRespectsQueueCapacity(t *testing.T) {
+	a, b := pair(t)
+	peer := b.self().ID
+	if err := a.Send(peer, "Отменённое сообщение"); err != nil {
+		t.Fatal(err)
+	}
+	id := a.state.Messages[0].ID
+	if err := a.CancelMessage(peer, id); err != nil {
+		t.Fatal(err)
+	}
+	// Occupy the in-memory admission budget without 1000 unrelated disk commits.
+	for i := 0; i < 1000; i++ {
+		a.state.Messages = append(a.state.Messages, message{Out: true})
+	}
+	if err := a.RetryMessage(peer, id); err == nil || !strings.Contains(err.Error(), "1000") {
+		t.Fatalf("full queue accepted a cancelled message: %v", err)
+	}
+	if !a.state.Messages[0].Cancelled {
+		t.Fatal("rejected retry changed the message")
+	}
+	// Reopen the actual persisted record: rejection must not modify disk either.
+	again, err := NewNode(a.dir, bytes.Repeat([]byte{42}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.state.Messages[0].Cancelled {
+		t.Fatal("rejected retry modified the persisted message")
+	}
+	if err := again.RetryMessage(peer, id); err != nil {
+		t.Fatal("retry should work after capacity is available", err)
+	}
+}

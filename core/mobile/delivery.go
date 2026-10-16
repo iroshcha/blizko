@@ -104,6 +104,17 @@ func (n *Node) RetryMessage(peer, id string) error {
 	if !validPacket(m.Packet) {
 		return errors.New("Пакет слишком велик. Отмените сообщение и отправьте сокращённый текст.")
 	}
+	if m.Cancelled {
+		pending := 0
+		for _, queued := range n.state.Messages {
+			if queued.Out && !queued.Delivered && !queued.Cancelled {
+				pending++
+			}
+		}
+		if pending >= 1000 {
+			return errors.New("Очередь содержит 1000 ожидающих сообщений. Дождитесь доставки.")
+		}
+	}
 	m.Cancelled = false
 	m.Failure = ""
 	if err := n.storeMessage(m, index); err != nil {

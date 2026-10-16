@@ -1,81 +1,157 @@
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import {Chat} from './client.js';
-import {contactCode} from './protocol.js';
+import {contactCode,parseContact} from './protocol.js';
 import {exportBackup,importBackup} from './storage.js';
+import {createUIStore,connectionView,composerView} from './ui-state.js';
+import {ConversationView,element,setText,reconcile} from './conversation-view.js';
 
 const $=id=>document.getElementById(id);
-const chat=new Chat();
-let current='',messageKey='',toastTimer,backupMode='export',registration,releaseLock;
-function toast(s){$('toast').textContent=s;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
-function fail(e){toast(e?.message||'Действие не выполнено. Попробуйте снова.');}
+const chat=new Chat(),ui=createUIStore(),contactNodes=new Map();
+let toastTimer,backupMode='export',registration,releaseLock,markingRead=false;
+function toast(s){setText($('toast'),s);$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
+function errorText(e){return e?.name==='QuotaExceededError'?'Недостаточно места для сохранения. Освободите место на устройстве.':e?.message||'Действие не выполнено. Попробуйте снова.';}
+function fail(e){toast(errorText(e));}
+function clearToast(){clearTimeout(toastTimer);$('toast').hidden=true;}
 function fatal(e){$('welcome').hidden=true;$('app').hidden=true;$('fatal').hidden=false;$('fatal-text').textContent=e.message;}
-function element(tag,cls,value){const e=document.createElement(tag);if(cls)e.className=cls;if(value!==undefined)e.textContent=value;return e;}
-function dialog(id){$(id).showModal();}
-function action(id,fn){$(id).addEventListener('click',async()=>{const b=$(id);b.disabled=true;try{await fn();}catch(e){fail(e);}finally{b.disabled=false;}});}
+function dialog(id){clearToast();$(id).showModal();}
+function action(id,fn){$(id).addEventListener('click',async()=>{const b=$(id);b.disabled=true;try{await fn();}catch(e){fail(e);}finally{b.disabled=false;render();}});}
 function form(id,fn){$(id).addEventListener('submit',async e=>{e.preventDefault();const button=$(id).querySelector('[type=submit]');button.disabled=true;try{await fn();}catch(error){fail(error);}finally{button.disabled=false;}});}
 function initial(name){return [...name][0]?.toLocaleUpperCase('ru')||'·';}
-const time=t=>new Date(t).toLocaleTimeString('ru',{hour:'2-digit',minute:'2-digit'});
-const day=t=>new Date(t).toLocaleDateString('ru',{day:'numeric',month:'long'});
+const conversation=new ConversationView($('messages'),$('new-messages'),{
+ retry:(peer,id)=>chat.retryMessage(peer,id).catch(fail),cancel:(peer,id)=>chat.cancel(peer,id).catch(fail),onBottom:markVisibleRead
+});
+async function markVisibleRead() {
+ const peer=ui.state.peer;
+ if(markingRead||!peer||!chat.state||document.visibilityState!=='visible'||document.querySelector('dialog[open]')||!conversation.atBottom())return;
+ if(!chat.state.messages.some(m=>m.peer===peer&&!m.out&&!m.archived&&m.time>(chat.state.read[peer]||0)))return;
+ markingRead=true;
+ try{await chat.markRead(peer);}catch(e){fail(e);}finally{markingRead=false;}
+}
+function renderComposer() {
+ const input=$('message'),view=composerView(input.value,ui.state.sending,ui.state.sendError);
+ // Hidden textareas have no measurable scrollHeight; resize after opening a chat.
+ if(ui.state.peer){input.style.height='auto';input.style.height=Math.min(160,input.scrollHeight)+'px';input.style.overflowY=input.scrollHeight>160?'auto':'hidden';}
+ $('send').disabled=view.disabled;setText($('send'),ui.state.sending?'…':'↑');
+ $('send').setAttribute('aria-label',ui.state.sending?'Сохраняем сообщение':'Отправить');
+ $('composer-error').hidden=!view.error;setText($('composer-error'),view.error);input.setAttribute('aria-invalid',String(!!view.error));
+ const shortcut=matchMedia('(pointer:coarse)').matches?'↵ — новая строка':'Ctrl/⌘ + Enter — отправить';
+ setText($('composer-hint'),ui.state.sending?'Сохраняем сообщение…':chat.online?shortcut:'Можно писать без связи — сообщение останется в очереди');
+}
 function render() {
  const s=chat.state;if(!s)return;
- $('welcome').hidden=true;$('app').hidden=false;
- $('status').textContent=chat.online?'Подключено к вашему серверу':'Нет связи с сервером';
- $('status-dot').classList.toggle('online',chat.online);$('reconnect').hidden=chat.online;
- $('contact-count').textContent=String(s.contacts.length);
- const search=$('search').value.toLocaleLowerCase('ru');
- const list=$('contacts');list.replaceChildren();
- for(const c of s.contacts) {
-  if(!c.name.toLocaleLowerCase('ru').includes(search))continue;
-  const all=s.messages.filter(m=>m.peer===c.id&&!m.archived), last=all.at(-1);
-  const button=element('button','contact'+(current===c.id?' selected':''));button.setAttribute('aria-label',`Открыть чат: ${c.name}`);
-  button.append(element('div','avatar',initial(c.name)));
-  const info=element('div','contact-info');info.append(element('div','contact-name',c.name),element('div','preview',last?(last.out?'Вы: ':'')+last.text:'Обменяйтесь QR и поздоровайтесь'));button.append(info);
-  const unread=all.filter(m=>!m.out&&m.time>(s.read[c.id]||0)).length;
-  if(unread&&current!==c.id)button.append(element('span','unread',String(unread)));
-  button.onclick=()=>openChat(c.id).catch(fail);list.append(button);
+ const current=ui.state.peer,connection=connectionView(chat.connection,navigator.onLine);
+ $('welcome').hidden=true;$('app').hidden=false;$('app').classList.toggle('in-chat',!!current);
+ setText($('status'),connection.text);setText($('chat-connection'),connection.text);
+ $('status-dot').classList.toggle('online',connection.kind==='online');$('reconnect').hidden=connection.kind!=='offline';
+ setText($('connection-hint'),connection.hint);setText($('contact-count'),String(s.contacts.length));
+ const search=ui.state.search.trim().toLocaleLowerCase('ru'),summaries=new Map();
+ for(const m of s.messages)if(!m.archived){const summary=summaries.get(m.peer)||{last:null,unread:0};summary.last=m;if(!m.out&&m.time>(s.read[m.peer]||0))summary.unread++;summaries.set(m.peer,summary);}
+ const list=$('contacts'),ordered=[];
+ for(const c of [...s.contacts].sort((a,b)=>(summaries.get(b.id)?.last?.time||0)-(summaries.get(a.id)?.last?.time||0))) {
+  let button=contactNodes.get(c.id);
+  if(!button){
+   button=element('button','contact');button.type='button';button.append(element('div','avatar'));
+   const info=element('div','contact-info');info.append(element('div','contact-name'),element('div','preview'));button.append(info,element('span','unread'));
+   button.onclick=()=>openChat(c.id).catch(fail);contactNodes.set(c.id,button);
+  }
+  const {last,unread}=summaries.get(c.id)||{unread:0};
+  button.classList.toggle('selected',current===c.id);button.setAttribute('aria-label',`Открыть чат: ${c.name}`);
+  if(current===c.id)button.setAttribute('aria-current','true');else button.removeAttribute('aria-current');
+  button.hidden=!c.name.toLocaleLowerCase('ru').includes(search);
+  setText(button.children[0],initial(c.name));setText(button.children[1].children[0],c.name);
+  setText(button.children[1].children[1],last?(last.out?'Вы: ':'')+last.text:'Обменяйтесь QR и поздоровайтесь');
+  setText(button.children[2],String(unread));button.children[2].hidden=!unread;ordered.push(button);
  }
+ reconcile(list,ordered);$('search-empty').hidden=!s.contacts.length||ordered.some(node=>!node.hidden);
  $('empty-contacts').hidden=s.contacts.length>0;list.hidden=!s.contacts.length;
- $('no-chat').hidden=!!current;$('chat').hidden=!current;
+ $('no-chat').hidden=!!current;$('chat').hidden=!current;renderAdd();renderComposer();
  if(!current)return;
  const c=s.contacts.find(c=>c.id===current);if(!c)return;
- $('chat-name').textContent=c.name;$('chat-avatar').textContent=initial(c.name);
- const issue=chat.issues.get(current);$('delivery-issue').hidden=!issue;$('delivery-issue').textContent=issue||'';
- const messages=s.messages.filter(m=>m.peer===current&&!m.archived),key=JSON.stringify(messages);
- if(key===messageKey)return;messageKey=key;
- const box=$('messages'),nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<100;
- box.replaceChildren();let previous='';
- if(!messages.length){const empty=element('div','empty-contacts');empty.append(element('h2','',`Напишите ${c.name}`),element('p','','Для переписки добавьте QR-коды друг друга и откройте приложения на обоих устройствах.'));box.append(empty);}
- for(const m of messages) {
-  const date=day(m.time);if(date!==previous){box.append(element('div','day-label',date));previous=date;}
-  const b=element('article','bubble'+(m.out?' out':''));b.append(element('div','bubble-text',m.text));
-  b.append(element('div','bubble-meta',time(m.time)+(m.out?' · '+(m.delivered?'Доставлено ✓✓':m.cancelled?'Отменено':'В очереди ◷'):'')));
-  if(m.out&&!m.delivered){const controls=element('div','bubble-actions');const retry=element('button','',m.cancelled?'Отправить снова':'Повторить');retry.onclick=()=>chat.retryMessage(m.peer,m.id).catch(fail);controls.append(retry);if(!m.cancelled){const cancel=element('button','','Отменить');cancel.onclick=()=>chat.cancel(m.peer,m.id).catch(fail);controls.append(cancel);}b.append(controls);}
-  box.append(b);
- }
- if(nearBottom||messages.at(-1)?.out)box.scrollTop=box.scrollHeight;
+ setText($('chat-name'),c.name);setText($('chat-avatar'),initial(c.name));
+ const hasPending=s.messages.some(m=>m.peer===current&&m.out&&!m.delivered&&!m.cancelled);
+ const issue=hasPending?chat.issues.get(current):'';$('delivery-issue').hidden=!issue;setText($('delivery-issue'),issue?issue+'. Сообщение сохранено в очереди.':'');
+ const probe=ui.state.probe;$('probe').disabled=!chat.online||probe?.status==='checking';
+ $('probe-result').hidden=!probe;setText($('probe-result'),probe?(probe.status==='checking'?'':'Последняя проверка: ')+probe.text:'');
+ $('probe-result').dataset.status=probe?.status||'';
+ conversation.render(current,c.name,s.messages.filter(m=>m.peer===current&&!m.archived),chat);
 }
 async function openChat(id) {
- current=id;messageKey='';$('app').classList.add('in-chat');$('message').value=chat.state.drafts[id]||'';render();$('messages').scrollTop=$('messages').scrollHeight;
- await chat.markRead(id);
+ $('message').value=chat.state.drafts[id]||'';ui.dispatch({type:'select',peer:id});conversation.toBottom();await markVisibleRead();
 }
-chat.addEventListener('change',()=>{
- render();
- if(current&&document.visibilityState==='visible'&&chat.state.messages.some(m=>m.peer===current&&!m.out&&!m.archived&&m.time>(chat.state.read[current]||0)))chat.markRead(current).catch(fail);
+ui.subscribe(render);
+chat.addEventListener('change',()=>{render();markVisibleRead();});
+$('search').addEventListener('input',()=>ui.dispatch({type:'search',value:$('search').value}));
+$('message').addEventListener('input',()=>{
+ ui.dispatch({type:'send-error',error:''});
+ const peer=ui.state.peer;if(peer)chat.draft(peer,$('message').value).catch(e=>{if(peer===ui.state.peer)ui.dispatch({type:'send-error',error:'Не удалось сохранить черновик. '+errorText(e)});fail(e);});
 });
-$('search').addEventListener('input',render);
-$('message').addEventListener('input',()=>{if(current)chat.draft(current,$('message').value).catch(fail);});
-form('create-form',async()=>{await chat.create($('my-name').value);chat.start();await navigator.storage?.persist?.();});
-form('send-form',async()=>{const peer=current,value=$('message').value;await chat.send(peer,value);if(current===peer&&$('message').value===value)$('message').value='';});
-action('back',()=>{current='';$('app').classList.remove('in-chat');render();});
+$('message').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)&&!e.isComposing){e.preventDefault();$('send-form').requestSubmit();}});
+form('create-form',async()=>{await chat.create($('my-name').value);clearToast();chat.start();await navigator.storage?.persist?.();});
+$('send-form').addEventListener('submit',async e=>{
+ e.preventDefault();const peer=ui.state.peer,value=$('message').value;if(!peer||composerView(value,ui.state.sending).disabled)return;
+ ui.dispatch({type:'send-start'});let error='';
+ try{await chat.send(peer,value);clearToast();if(ui.state.peer===peer&&$('message').value===value)$('message').value='';}
+ catch(e){error='Не удалось отправить. '+errorText(e);fail(e);}
+ finally{ui.dispatch({type:'send-end',peer,error});}
+});
+action('back',()=>ui.dispatch({type:'select',peer:''}));
 action('reconnect',()=>chat.reconnect());
-action('probe',async()=>toast(await chat.probe(current)));
-action('add-open',()=>dialog('add-dialog'));
-form('add-form',async()=>{const id=await chat.addContact($('contact-name').value,$('contact-code').value);$('add-dialog').close();$('add-form').reset();await openChat(id);toast('Контакт добавлен. Не забудьте показать свой QR.');});
+action('probe',async()=>{
+ const {peer,selection}=ui.state;ui.dispatch({type:'probe',peer,selection,status:'checking',text:'Проверяем связь с собеседником…'});
+ try{ui.dispatch({type:'probe',peer,selection,status:'success',text:await chat.probe(peer)});}
+ catch(e){ui.dispatch({type:'probe',peer,selection,status:'error',text:e.message});}
+});
+function renderAdd() {
+ const a=ui.state.add;
+ for(let step=1;step<=3;step++){$('add-step-'+step).hidden=a.step!==step;$('add-progress-'+step).setAttribute('aria-current',a.step===step?'step':'false');}
+ setText($('add-step-label'),`Шаг ${a.step} из 3`);
+ $('contact-code').required=a.step===1;$('contact-name').required=a.step===2;
+ $('contact-code').disabled=a.busy||a.step!==1;$('contact-name').disabled=a.busy||a.step!==2;
+ $('add-submit').hidden=a.step===3;$('add-submit').disabled=a.busy;setText($('add-submit'),a.busy?(a.step===1?'Проверяем…':'Сохраняем…'):a.step===1?'Продолжить':'Сохранить контакт');
+ $('add-previous').hidden=a.step!==2;$('add-previous').disabled=a.busy;
+ $('add-error').hidden=!a.error;setText($('add-error'),a.error);
+ $('add-probe').disabled=a.busy||!chat.online;setText($('add-probe'),a.busy?'Проверяем…':'Проверить связь');
+ $('add-done').disabled=a.busy;setText($('add-done'),a.verified?'Начать переписку':'Открыть чат');
+ setText($('add-result'),a.verified?'Связь проверена. Можно начинать переписку.':`Контакт «${a.name}» сохранён. Попросите собеседника добавить ваш QR.`);
+ for(const b of $('add-dialog').querySelectorAll('[data-close],.scan-buttons button'))b.disabled=a.busy;
+}
+const drawQR=(canvas,code)=>QRCode.toCanvas(canvas,code,{width:640,margin:4,errorCorrectionLevel:'M',color:{dark:'#163f36',light:'#ffffff'}});
+async function copyCode(code) {try{await navigator.clipboard.writeText(code);toast('Код скопирован');}catch{toast('Копирование недоступно. Покажите QR или выделите код вручную.');}}
+action('add-open',()=>{$('add-form').reset();setText($('add-code-status'),'');ui.dispatch({type:'add-reset'});dialog('add-dialog');});
+$('add-dialog').addEventListener('cancel',e=>{if(ui.state.add.busy)e.preventDefault();});
+$('add-form').addEventListener('submit',async e=>{
+ e.preventDefault();const step=ui.state.add.step;if(ui.state.add.busy||step===3)return;
+ ui.dispatch({type:'add',value:{busy:true,error:''}});
+ try {
+  if(step===1){
+   const c=await parseContact($('contact-code').value,'Контакт');
+   if(c.id===chat.state.identity.id)throw Error('Это ваш QR. Попросите код собеседника.');
+   const existing=chat.state.contacts.find(p=>p.id===c.id);if(existing)$('contact-name').value=existing.name;
+   ui.dispatch({type:'add',value:{step:2}});
+  }else{
+   const name=$('contact-name').value.trim(),id=await chat.addContact(name,$('contact-code').value);
+   ui.dispatch({type:'add',value:{step:3,peer:id,name}});
+   const code=contactCode(chat.state.identity);$('add-own-code').value=code;await drawQR($('add-qr'),code);
+  }
+ }catch(e){ui.dispatch({type:'add',value:{error:errorText(e)}});}
+ finally{ui.dispatch({type:'add',value:{busy:false}});if(ui.state.add.step===2)$('contact-name').focus();}
+});
+action('add-previous',()=>ui.dispatch({type:'add',value:{step:1,error:''}}));
+action('add-copy',()=>copyCode(contactCode(chat.state.identity)));
+action('add-probe',async()=>{
+ ui.dispatch({type:'add',value:{busy:true,error:'',verified:false}});
+ try{await chat.probe(ui.state.add.peer);ui.dispatch({type:'add',value:{verified:true}});}
+ catch(e){ui.dispatch({type:'add',value:{error:e.message+'. Контакт уже сохранён — проверить связь можно позже.'}});}
+ finally{ui.dispatch({type:'add',value:{busy:false}});}
+});
+action('add-done',async()=>{$('add-dialog').close();await openChat(ui.state.add.peer);});
 action('qr-open',async()=>{
  const code=contactCode(chat.state.identity);$('qr-name').textContent=chat.state.identity.name;$('own-code').value=code;
- await QRCode.toCanvas($('qr-canvas'),code,{width:640,margin:4,errorCorrectionLevel:'M',color:{dark:'#163f36',light:'#ffffff'}});dialog('qr-dialog');
+ await drawQR($('qr-canvas'),code);dialog('qr-dialog');
 });
+
+
 action('copy-code',async()=>{try{await navigator.clipboard.writeText($('own-code').value);toast('Код скопирован');}catch{$('own-code').focus();$('own-code').select();toast('Выделили код: выберите «Скопировать».');}});
 action('settings-open',()=>{$('profile-name').textContent=chat.state.identity.name;dialog('settings-dialog');});
 action('clear-open',()=>dialog('clear-dialog'));
@@ -84,6 +160,8 @@ for(const button of document.querySelectorAll('[data-close]'))button.addEventLis
 action('scan-camera',()=>$('camera-file').click());action('scan-photo',()=>$('photo-file').click());
 for(const id of ['camera-file','photo-file'])$(id).addEventListener('change',async()=>{
  const file=$(id).files[0];if(!file)return;
+ if(ui.state.add.busy)return;
+ ui.dispatch({type:'add',value:{busy:true,error:''}});
  let url;
  try {
   if(file.size>20*1024*1024)throw Error('Фото слишком большое — максимум 20 МБ');
@@ -92,8 +170,8 @@ for(const id of ['camera-file','photo-file'])$(id).addEventListener('change',asy
   const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,canvas.width,canvas.height);const pixels=ctx.getImageData(0,0,canvas.width,canvas.height);
   const result=jsQR(pixels.data,pixels.width,pixels.height,{inversionAttempts:'attemptBoth'});
   if(!result||!result.data.startsWith('blizko:3:'))throw Error('QR «Близко» не найден. Снимите его ближе или вставьте код.');
-  $('contact-code').value=result.data;toast('QR прочитан. Укажите имя и нажмите «Добавить».');
- }catch(e){fail(e);}finally{if(url)URL.revokeObjectURL(url);$(id).value='';}
+  $('contact-code').value=result.data;setText($('add-code-status'),'QR прочитан. Нажмите «Продолжить».');ui.dispatch({type:'add',value:{error:''}});
+ }catch(e){ui.dispatch({type:'add',value:{error:e.message}});}finally{if(url)URL.revokeObjectURL(url);$(id).value='';ui.dispatch({type:'add',value:{busy:false}});}
 });
 function backupDialog(mode) {
  backupMode=mode;$('backup-form').reset();$('backup-file-label').hidden=mode!=='import';$('backup-file').required=mode==='import';
@@ -135,7 +213,10 @@ async function boot() {
  setupWorker().catch(()=>{});
 }
 window.addEventListener('online',()=>chat.reconnect());
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&chat.state){chat.reconnect();if(current)chat.markRead(current).catch(fail);}});
+window.addEventListener('offline',()=>chat.disconnect());
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&chat.state){chat.reconnect();markVisibleRead();}});
+function resizeViewport(){if(window.visualViewport?.scale===1)document.documentElement.style.setProperty('--app-height',window.visualViewport.height+'px');}
+window.visualViewport?.addEventListener('resize',resizeViewport);resizeViewport();
 window.addEventListener('pagehide',()=>{chat.stop();chat.chain.finally(()=>releaseLock?.());});
 window.addEventListener('pageshow',e=>{if(e.persisted)location.reload();});
 boot().catch(fatal);
