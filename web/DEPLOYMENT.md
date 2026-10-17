@@ -1,8 +1,10 @@
 # Stable web origin and signed relay discovery
 
 Status (2026-10-17): the static app is published at https://iroshcha.github.io/blizko/.
-The directory branch is published, but automatic server publication is NOT activated:
-a permanent GitHub write deploy key is awaiting explicit owner approval.
+Automatic server publication is active after explicit owner approval of the repository
+write deploy key. The first server-signed update and the supervisor no-change pass
+were verified on 2026-10-17. The owner chose to retain Tuna only; no Cloudflare tunnel
+was installed.
 A clean browser cannot yet connect from Pages to free Tuna: its abuse interstitial
 intercepts both WebSocket and HTTP CORS preflight. Do not instruct users to migrate
 their profile to Pages until a compatible free tunnel has passed end-to-end tests.
@@ -60,6 +62,8 @@ Go tests cover verification and reconnecting between two brokers without changin
 identity/keys. Production native/web interoperability is checked through Tuna.
 The Pages-to-Tuna clean-browser check currently fails at Tuna's warning page; a
 working origin allowlist alone cannot resolve that provider restriction.
+Use `-refresh` for an explicit immediate renewal of the current signed address;
+ordinary supervisor runs retain the two-day renewal cadence.
 There is no uptime guarantee from the free providers or the home network.
 The native visual redesign is not included in version 0.3.2.
 

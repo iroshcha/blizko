@@ -38,6 +38,7 @@ func main() {
 	logfile := flag.String("log", "", "Current Tuna log")
 	initialize := flag.Bool("init", false, "Create keys; output public keys only")
 	export := flag.Bool("export", false, "Output signed current address for initial manual publication")
+	refresh := flag.Bool("refresh", false, "Renew the signed current address immediately")
 	flag.Parse()
 	if *root == "" {
 		log.Fatal("root required")
@@ -65,7 +66,7 @@ func main() {
 		fmt.Println(string(raw))
 		return
 	}
-	if e := publish(*root, *logfile); e != nil {
+	if e := publish(*root, *logfile, *refresh); e != nil {
 		log.Fatal(e)
 	}
 }
@@ -140,7 +141,7 @@ func endpoint(logfile string) (string, error) {
 	}
 	return u, nil
 }
-func publish(root, logfile string) error {
+func publish(root, logfile string, refresh bool) error {
 	u, e := endpoint(logfile)
 	if e != nil {
 		return e
@@ -152,7 +153,7 @@ func publish(root, logfile string) error {
 		return errors.New("signing key missing")
 	}
 	successPath := filepath.Join(root, "last-success.json")
-	if raw, e := os.ReadFile(successPath); e == nil {
+	if raw, e := os.ReadFile(successPath); e == nil && !refresh {
 		old, e := discovery.Verify(raw, ed25519.PrivateKey(key).Public().(ed25519.PublicKey), time.Now())
 		if e == nil && old.URL == u && old.Expires > time.Now().Add(5*24*time.Hour).UnixMilli() {
 			fmt.Println("Relay address unchanged")
@@ -190,7 +191,7 @@ func publish(root, logfile string) error {
 		return e
 	}
 	path := filepath.Join(dir, "relay.json")
-	if raw, e := os.ReadFile(path); e == nil {
+	if raw, e := os.ReadFile(path); e == nil && !refresh {
 		old, e := discovery.Verify(raw, ed25519.PrivateKey(key).Public().(ed25519.PublicKey), time.Now())
 		if e == nil && old.URL == u && old.Expires > time.Now().Add(5*24*time.Hour).UnixMilli() {
 			_ = os.WriteFile(successPath, raw, 0600)
