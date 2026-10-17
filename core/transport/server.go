@@ -7,20 +7,22 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 )
 
-// No messages are stored on disk. A bounded queue only bridges live sockets;
-// offline messages and retries remain in the sender's encrypted local outbox.
+// Signed opaque packets travel over bounded live queues. An optional Durable
+// store retains encrypted packets and receipts across offline periods.
 type Server struct {
 	mu            sync.Mutex
 	clients       map[string]*peer
 	slots         chan struct{}
 	closed        bool
-	browserOrigin string // Explicit deployment origin; empty preserves native-only access.
+	browserOrigin string       // Explicit deployment origin; empty preserves native-only access.
+	Durable       DurableStore // Set before accepting connections; nil retains live-only mode.
 }
 type peer struct {
 	conn    *websocket.Conn
@@ -123,8 +125,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer close(done)
 		defer c.CloseNow()
+		replay := func() {
+			if s.Durable != nil {
+				for _, f := range s.Durable.Pending(p.address, 8) {
+					select {
+					case p.out <- f:
+					default:
+						return
+					}
+				}
+			}
+		}
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		replay()
 		for {
 			select {
+			case <-ticker.C:
+				replay()
 			case <-ctx.Done():
 				return
 			case f := <-p.out:
@@ -154,6 +172,50 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		allowance--
 		if f.From != p.address || !f.Valid() {
 			return
+		}
+		if f.Type == "request" && f.To == ControlAddress {
+			result := Response{Status: 503, Code: "unavailable"}
+			if s.Durable != nil {
+				result = s.Durable.Control(f)
+			}
+			select {
+			case p.out <- Frame{Type: "server", ID: f.ID, From: ControlAddress, To: p.address, Result: &result}:
+			default:
+				return
+			}
+			continue
+		}
+		if s.Durable != nil {
+			if f.Type == "response" {
+				_ = s.Durable.SaveReceipt(f)
+			}
+			if f.Type == "request" {
+				offered, err := s.Durable.Offer(f)
+				if err != nil {
+					select {
+					case p.out <- Frame{Type: "unavailable", ID: f.ID, From: f.To, To: f.From}:
+					default:
+						return
+					}
+					continue // Never claim durable storage if the transaction failed.
+				}
+				if offered.Stored {
+					if offered.Frame.Type == "response" {
+						select {
+						case p.out <- offered.Frame:
+						default:
+							return
+						}
+						continue
+					}
+					select {
+					case p.out <- Frame{Type: "stored", ID: f.ID, From: f.To, To: f.From, Data: strconv.FormatInt(offered.Expires, 10)}:
+					default:
+						return
+					}
+					f = offered.Frame
+				}
+			}
 		}
 		s.mu.Lock()
 		destination := s.clients[f.To]

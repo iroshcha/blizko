@@ -40,8 +40,8 @@ function ConvertTo-TunaHost([string]$value) {
     if ($uri.Scheme -ne 'https' -or $uri.UserInfo -ne '' -or $uri.Query -ne '' -or $uri.Fragment -ne '' -or $uri.AbsolutePath -ne '/' -or -not $uri.IsDefaultPort) {
         throw 'Нужен только HTTPS-адрес без пароля, пути, параметров или номера порта.'
     }
-    if ($uri.Host -notmatch '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ru\.tuna\.am$') {
-        throw 'Нужен адрес российского региона вида имя.ru.tuna.am. Скопируйте его в разделе «Домены» Tuna.'
+    if ($uri.Host -notmatch '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:ru\.tuna\.am|a\.tuna\.free)$') {
+        throw 'Нужен постоянный адрес Tuna вида имя.a.tuna.free. Скопируйте его в разделе «Домены» Tuna.'
     }
     return $uri.Host
 }
@@ -59,7 +59,7 @@ try {
             break
         }
         'Configure' {
-            if ($Domain -eq '') { $Domain = Read-Host 'Вставьте свой БЕСПЛАТНЫЙ постоянный адрес Tuna (имя.ru.tuna.am)' }
+            if ($Domain -eq '') { $Domain = Read-Host 'Вставьте свой БЕСПЛАТНЫЙ постоянный адрес Tuna (имя.a.tuna.free)' }
             $hostname = ConvertTo-TunaHost $Domain
             $url = 'https://' + $hostname + '/'
             [IO.File]::WriteAllText($settingsPath, (@{ host = $hostname } | ConvertTo-Json), [Text.Encoding]::UTF8)
@@ -98,7 +98,20 @@ try {
             $logs = Join-Path $serverRoot 'logs'
             New-Item -ItemType Directory -Force -Path $logs | Out-Null
             $job = New-Object BlizkoRelayProcessJob
+            # VAPID private key and encrypted queue belong only to the server account.
+            $mailboxPath = Join-Path $serverRoot 'delivery-private'
+            if (Test-Path -LiteralPath $mailboxPath) {
+                if ((Get-Item -LiteralPath $mailboxPath).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe delivery directory.' }
+            } else { New-Item -ItemType Directory -Path $mailboxPath | Out-Null }
+            $acl = New-Object Security.AccessControl.DirectorySecurity
+            $acl.SetAccessRuleProtection($true, $false)
+            $account = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            foreach ($sid in @($account, (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')), (New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')))) {
+                $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+            }
+            Set-Acl -LiteralPath $mailboxPath -AclObject $acl
             $serverArguments = @('-listen', '127.0.0.1:3340')
+            $serverArguments += @('-mailbox', ('"' + $mailboxPath + '"'))
             if ($hostname) { $serverArguments += @('-web-origin', ('https://' + $hostname)) }
             $tokenFile = Join-Path $serverRoot 'diagnostics-private\access-code.txt'
             if (Test-Path -LiteralPath $tokenFile -PathType Leaf) { $serverArguments += @('-token', ('"' + $tokenFile + '"'), '-data', ('"' + (Join-Path $serverRoot 'diagnostics-private\journal') + '"')) }
@@ -121,7 +134,7 @@ try {
                     Start-Sleep -Seconds $CheckSeconds
                     break
                 }
-                $tunaArguments = @('http', 'http://127.0.0.1:3340', ('--subdomain=' + $hostname.Replace('.ru.tuna.am', '')), '--location=ru', '--inspect=false', '--https-redirect', '--no-colors', ('--config="' + $tunaConfig + '"'))
+                $tunaArguments = @('http', 'http://127.0.0.1:3340', ('--subdomain=' + $hostname.Split('.')[0]), '--location=ru', '--inspect=false', '--https-redirect', '--no-colors', ('--config="' + $tunaConfig + '"'))
                 $tunaProcess = Start-Process -FilePath $tuna -ArgumentList $tunaArguments -WorkingDirectory $serverRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'tuna.out.log') -RedirectStandardError (Join-Path $logs 'tuna.err.log')
                 $job.Add($tunaProcess)
                 Write-Host "Адрес: https://$hostname/"

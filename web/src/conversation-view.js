@@ -68,7 +68,7 @@ export class ConversationView {
     const actions=node.children[2];actions.hidden=m.delivered;
     const [retry,cancel]=actions.children;
     setText(retry,m.cancelled?'Отправить снова':'Повторить сейчас');
-    retry.disabled=status.kind==='sending';cancel.hidden=!!m.cancelled;
+    retry.disabled=status.kind==='sending';cancel.hidden=!!m.cancelled||!!m.submitted;
    }
    next.set(key,node);ordered.push(node);
   }

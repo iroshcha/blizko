@@ -17,23 +17,27 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 type message struct {
-	ID        string    `json:"id"`
-	Peer      string    `json:"peer"`
-	Text      string    `json:"text"`
-	Out       bool      `json:"out"`
-	Delivered bool      `json:"delivered"`
-	Time      int64     `json:"time"`
-	Packet    *envelope `json:"packet,omitempty"`
-	Order     int64     `json:"order"`
-	Archived  bool      `json:"archived,omitempty"`
-	Cancelled bool      `json:"cancelled,omitempty"`
-	Failure   string    `json:"failure,omitempty"`
+	Submitted   bool      `json:"submitted,omitempty"`
+	StoredUntil int64     `json:"storedUntil,omitempty"`
+	PollAfter   int64     `json:"pollAfter,omitempty"`
+	ID          string    `json:"id"`
+	Peer        string    `json:"peer"`
+	Text        string    `json:"text"`
+	Out         bool      `json:"out"`
+	Delivered   bool      `json:"delivered"`
+	Time        int64     `json:"time"`
+	Packet      *envelope `json:"packet,omitempty"`
+	Order       int64     `json:"order"`
+	Archived    bool      `json:"archived,omitempty"`
+	Cancelled   bool      `json:"cancelled,omitempty"`
+	Failure     string    `json:"failure,omitempty"`
 }
 type diskState struct {
 	Version     int               `json:"v"`
@@ -567,7 +571,7 @@ func (n *Node) flushRoutes(ctx context.Context, client *http.Client) {
 	var pending []message
 	peers := map[string]contact{}
 	for _, m := range n.state.Messages {
-		if m.Out && !m.Delivered && !m.Cancelled && m.Failure == "" && m.Packet != nil {
+		if m.Out && !m.Delivered && !m.Cancelled && m.Failure == "" && m.Packet != nil && time.Now().UnixMilli() >= m.PollAfter {
 			pending = append(pending, m)
 			if c, ok := n.peer(m.Peer); ok {
 				peers[m.Peer] = c
@@ -620,6 +624,10 @@ func (n *Node) flushRoutes(ctx context.Context, client *http.Client) {
 					return
 				}
 				issue := n.deliverOne(ctx, client, m, c)
+				if issue == storedIssue {
+					n.recordDeliveryIssue(c.ID, issue)
+					continue
+				}
 				n.mu.Lock()
 				current := n.state.Messages[n.messageIndexes[recordID(m)]]
 				skipped := current.Cancelled || current.Failure != ""
@@ -669,6 +677,15 @@ func (n *Node) deliverOne(ctx context.Context, client *http.Client, m message, c
 		n.mu.Unlock()
 		return ""
 	}
+	// Commit the first network attempt before handing the packet to the server.
+	if _, server := client.Transport.(*serverLink); server && !n.state.Messages[index].Submitted {
+		current := n.state.Messages[index]
+		current.Submitted = true
+		if err := n.storeMessage(current, index); err != nil {
+			n.mu.Unlock()
+			return "Не удалось сохранить состояние отправки."
+		}
+	}
 	attemptCtx, cancel := context.WithCancel(ctx)
 	attempt := &deliveryAttempt{cancel: cancel, peer: m.Peer, id: m.ID}
 	if n.inflight == nil {
@@ -701,6 +718,25 @@ func (n *Node) deliverOne(ctx context.Context, client *http.Client, m message, c
 		return "Собеседник недоступен. Сообщение осталось в очереди; отправка будет повторена."
 	}
 	defer response.Body.Close()
+	if response.StatusCode == 202 && response.Header.Get("X-Blizko-Error") == "stored" {
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, 32))
+		expiry, err := strconv.ParseInt(string(raw), 10, 64)
+		if err != nil || expiry < time.Now().UnixMilli() || expiry > time.Now().Add(8*24*time.Hour).UnixMilli() {
+			return "Не удалось проверить срок хранения на сервере."
+		}
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		index, exists := n.messageIndexes[recordID(m)]
+		if exists && !n.state.Messages[index].Delivered {
+			current := n.state.Messages[index]
+			current.StoredUntil = expiry
+			current.PollAfter = time.Now().Add(30 * time.Second).UnixMilli()
+			if n.storeMessage(current, index) != nil {
+				return "Не удалось сохранить состояние отправки."
+			}
+		}
+		return storedIssue
+	}
 	if response.StatusCode != 200 {
 		if response.Header.Get("X-Blizko-Error") == "invalid_message" {
 			n.failMessage(m, "Собеседник отклонил пакет. Проверьте приложения и QR, затем повторите отправку.")

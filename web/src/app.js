@@ -1,5 +1,6 @@
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
+import {setupPush} from './push.js';
 import {Chat} from './client.js';
 import {contactCode,parseContact} from './protocol.js';
 import {exportBackup,importBackup} from './storage.js';
@@ -9,6 +10,7 @@ import {ConversationView,element,setText,reconcile} from './conversation-view.js
 const $=id=>document.getElementById(id);
 const chat=new Chat(),ui=createUIStore(),contactNodes=new Map();
 let toastTimer,backupMode='export',registration,releaseLock,markingRead=false;
+setupPush(chat,s=>toast(s));
 function toast(s){setText($('toast'),s);$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
 function errorText(e){return e?.name==='QuotaExceededError'?'Недостаточно места для сохранения. Освободите место на устройстве.':e?.message||'Действие не выполнено. Попробуйте снова.';}
 function fail(e){toast(errorText(e));}

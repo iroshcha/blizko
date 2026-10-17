@@ -17,7 +17,7 @@ async function queuedChat(peers=1,messages=2) {
  const self=await parseContact(contactCode(chat.state.identity),'Sender'),requests=[];
  chat.exchange=(address,data)=>new Promise((resolve,reject)=>{
   const peer=identities.find(p=>p.address===address),message=open(JSON.parse(data),self,peer);
-  requests.push({peer:peer.id,id:message.id,reject,ack:()=>resolve({status:200,data:goJSON(seal({v:2,id:randomID(),from:peer.id,to:self.id,kind:'ack',ack:message.id},self,peer))})});
+  requests.push({stored:()=>resolve({status:202,code:"stored",data:String(Date.now()+86400000)}),peer:peer.id,id:message.id,reject,ack:()=>resolve({status:200,data:goJSON(seal({v:2,id:randomID(),from:peer.id,to:self.id,kind:'ack',ack:message.id},self,peer))})});
  });
  chat.online=true;chat.stopped=false;
  return {chat,identities,requests};
@@ -26,7 +26,7 @@ async function queuedChat(peers=1,messages=2) {
 test('outbox advances without polling, preserves FIFO and paces fast receipts',async t=>{
  const {chat,requests}=await queuedChat();t.after(()=>chat.stop());
  t.mock.timers.enable({apis:['setTimeout','Date'],now:10000});
- chat.flush();assert.equal(requests.length,1);
+ chat.flush();await settle();assert.equal(requests.length,1);
  requests[0].ack();await settle();
  assert.equal(chat.state.messages[0].delivered,true);
  assert.equal(requests.length,1,'a fast receipt must not cause an unlimited burst');
@@ -39,7 +39,7 @@ test('outbox advances without polling, preserves FIFO and paces fast receipts',a
 test('outbox gives other contacts a turn and bounds concurrent deliveries',async t=>{
  const {chat,identities,requests}=await queuedChat(5);t.after(()=>chat.stop());
  t.mock.timers.enable({apis:['setTimeout','Date'],now:10000});
- chat.flush();assert.equal(requests.length,1);
+ chat.flush();await settle();assert.equal(requests.length,1);
  for(let i=0;i<3;i++){t.mock.timers.tick(150);await settle();}
  assert.equal(requests.length,4);assert.equal(chat.active.size,4);
  t.mock.timers.tick(150);await settle();assert.equal(requests.length,4);
@@ -52,7 +52,7 @@ test('outbox gives other contacts a turn and bounds concurrent deliveries',async
 test('outbox waits after failure, retries the same message and stops scheduled work',async t=>{
  const {chat,requests}=await queuedChat();t.after(()=>chat.stop());
  t.mock.timers.enable({apis:['setTimeout','Date'],now:10000});
- chat.flush();requests[0].reject(Error('offline'));await settle();
+ chat.flush();await settle();requests[0].reject(Error('offline'));await settle();
  t.mock.timers.tick(1999);await settle();assert.equal(requests.length,1);
  t.mock.timers.tick(1);await settle();assert.equal(requests.length,2);
  assert.equal(requests[1].id,requests[0].id);assert.equal(chat.state.messages[0].delivered,false);
@@ -76,8 +76,9 @@ test('failed receipt persistence retains the packet and prevents advancing past 
  const {chat,requests}=await queuedChat();t.after(()=>chat.stop());
  t.mock.timers.enable({apis:['setTimeout','Date'],now:10000});
  const packet=structuredClone(chat.state.messages[0].packet);
+ chat.flush();await settle();
  chat.vault.save=async()=>{throw Error('Disk full');};
- chat.flush();requests[0].ack();await settle();
+ requests[0].ack();await settle();
  assert.equal(chat.state.messages[0].delivered,false);
  assert.deepEqual(chat.state.messages[0].packet,packet);
  t.mock.timers.tick(1999);await settle();assert.equal(requests.length,1);
@@ -148,4 +149,18 @@ test('failed persistence never acknowledges or drops a message during clearing',
  fail=true;assert.equal((await chat.accept(bob.address,packet)).status,503);assert.equal(chat.state.messages.length,0);
  fail=false;assert.equal((await chat.accept(bob.address,packet)).status,200);
  const before=structuredClone(chat.state);fail=true;await assert.rejects(chat.clearHistory());assert.deepEqual(chat.state,before);
+});
+
+
+test('server storage advances the paced queue without claiming delivery or permitting cancellation',async t=>{
+ const {chat,requests}=await queuedChat();t.after(()=>chat.stop());
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:10000});
+ chat.flush();await settle();requests[0].stored();await settle();
+ const m=chat.state.messages[0];assert.equal(m.delivered,false);assert.equal(m.submitted,true);assert.ok(m.storedUntil>Date.now());
+ await assert.rejects(chat.cancel(m.peer,m.id),/Отмена недоступна/);
+ t.mock.timers.tick(150);await settle();assert.equal(requests.length,2);assert.equal(requests[1].id,chat.state.messages[1].id);
+ requests[1].ack();await settle();
+ t.mock.timers.tick(29849);await settle();assert.equal(requests.length,2,'stored packet is not polled early');
+ t.mock.timers.tick(1);await settle();assert.equal(requests[2].id,m.id);requests[2].ack();await settle();
+ assert.ok(chat.state.messages.every(m=>m.delivered));
 });

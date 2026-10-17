@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ type Client struct {
 	identity string
 	Handle   func(string, string) Response
 	State    func(bool)
+	Receipt  func(string, string) bool // True only after an encrypted peer receipt is persisted.
 	mu       sync.Mutex
 	current  *session
 	wake     chan struct{}
@@ -116,15 +118,26 @@ func (c *Client) serve(ctx context.Context, s *session) {
 	workers := make(chan struct{}, 8)
 	var working sync.WaitGroup
 	defer func() { cancel(); working.Wait() }()
-	// Repeated request IDs never create additional work on the same connection.
-	seen := make(map[string]struct{})
-	order := make([]string, 0, 256)
+	// Suppress only concurrent duplicates: a failed durable write must be retryable.
+	var seen sync.Map
 	for {
 		var f Frame
 		if readJSON(ctx, s.conn, &f) != nil {
 			return
 		}
 		if f.To != c.identity {
+			continue
+		}
+		if f.Type == "server" || f.Type == "stored" {
+			s.mu.Lock()
+			p, ok := s.pending[f.ID]
+			s.mu.Unlock()
+			if ok && p.peer == f.From && ((f.Type == "server" && p.peer == ControlAddress && f.Result != nil) || (f.Type == "stored" && p.peer != ControlAddress)) {
+				select {
+				case p.reply <- f:
+				default:
+				}
+			}
 			continue
 		}
 		if f.Type == "unavailable" {
@@ -143,6 +156,23 @@ func (c *Client) serve(ctx context.Context, s *session) {
 			continue
 		}
 		if f.Type == "response" {
+			if c.Receipt != nil && f.Result.Status == 200 && f.Result.Data != "" {
+				select {
+				case workers <- struct{}{}:
+					working.Add(1)
+					go func(f Frame) {
+						defer working.Done()
+						defer func() { <-workers }()
+						if c.Receipt(f.From, f.Result.Data) {
+							data, _ := json.Marshal(map[string]string{"op": "receipt-done", "sender": f.From, "id": f.ID})
+							ack := Frame{Type: "request", ID: ID(), From: c.identity, To: ControlAddress, Data: string(data)}
+							ack.Sign(c.key)
+							_ = write(ctx, s.conn, ack)
+						}
+					}(f)
+				default:
+				}
+			}
 			s.mu.Lock()
 			p, ok := s.pending[f.ID]
 			s.mu.Unlock()
@@ -155,22 +185,18 @@ func (c *Client) serve(ctx context.Context, s *session) {
 			continue
 		}
 		key := f.From + ":" + f.ID
-		if _, ok := seen[key]; ok {
+		if _, ok := seen.LoadOrStore(key, struct{}{}); ok {
 			continue
 		}
-		if len(order) == 256 {
-			delete(seen, order[0])
-			order = order[1:]
-		}
-		seen[key] = struct{}{}
-		order = append(order, key)
 		select {
 		case workers <- struct{}{}:
 		default:
+			seen.Delete(key)
 			continue
 		}
 		working.Add(1)
 		go func(f Frame) {
+			defer seen.Delete(f.From + ":" + f.ID)
 			defer working.Done()
 			defer func() { <-workers }()
 			result := c.Handle(f.From, f.Data)
@@ -212,6 +238,9 @@ func (c *Client) Exchange(ctx context.Context, peer, data string) (Response, err
 	case <-s.done:
 		return Response{}, ErrOffline
 	case response := <-p.reply:
+		if response.Type == "stored" {
+			return Response{Status: 202, Code: "stored", Data: response.Data}, nil
+		}
 		if response.Type == "unavailable" {
 			return Response{}, ErrOffline
 		}

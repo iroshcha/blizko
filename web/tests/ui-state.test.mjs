@@ -22,6 +22,8 @@ test('offline presentation cannot claim sending or erase confirmed delivery',()=
  assert.equal(deliveryView({delivered:false},context).kind,'queued');
  assert.equal(deliveryView({delivered:true},context).kind,'delivered');
  assert.equal(deliveryView({cancelled:true},context).kind,'cancelled');
+ assert.equal(deliveryView({storedUntil:Date.now()+60000},context).kind,'stored');
+ assert.equal(deliveryView({storedUntil:Date.now()-1},context).kind,'queued');
 });
 test('composer uses wire byte limit and prevents empty or duplicate submissions',()=>{
  assert.equal(composerView(' \n ',false).disabled,true);

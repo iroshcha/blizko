@@ -24,7 +24,7 @@ export function createUIStore() {
 
 export function connectionView(connection,hasNetwork=true) {
  if(!hasNetwork)return {kind:'offline',text:'Нет интернета',hint:'Сообщения сохранятся и отправятся, когда связь вернётся.'};
- if(connection==='online')return {kind:'online',text:'Подключено к серверу',hint:'Для доставки собеседник тоже должен открыть приложение.'};
+ if(connection==='online')return {kind:'online',text:'Подключено к серверу',hint:'Сервер сохранит зашифрованное сообщение до подключения собеседника.'};
  if(connection==='connecting')return {kind:'connecting',text:'Подключаемся…',hint:'Очередь сохранена. Устанавливаем связь с сервером.'};
  return {kind:'offline',text:'Сервер недоступен',hint:'Очередь сохранена. Подключение повторится автоматически.'};
 }
@@ -32,6 +32,7 @@ export function connectionView(connection,hasNetwork=true) {
 export function deliveryView(message,{online,sending,issue}) {
  if(message.delivered)return {kind:'delivered',text:'Доставлено ✓✓'};
  if(message.cancelled)return {kind:'cancelled',text:'Повторы остановлены'};
+ if(message.storedUntil>Date.now())return {kind:'stored',text:'На сервере'};
  if(!online)return {kind:'queued',text:'Ждёт подключения'};
  if(sending)return {kind:'sending',text:'Отправляем…'};
  if(issue)return {kind:'retry',text:'Ожидает повторной отправки'};

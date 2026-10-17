@@ -86,11 +86,34 @@ func (n *Node) startLocked() error {
 		n.relay = base
 		n.revision++
 	})
+	link.client.Receipt = n.serverReceipt
 	n.link = link
 	n.mu.Unlock()
 	go link.client.Run(ctx)
 	go n.runDelivery(ctx, link)
 	return nil
+}
+
+func (n *Node) serverReceipt(remote, data string) bool {
+	n.mu.Lock()
+	var peer contact
+	for _, c := range n.state.Contacts {
+		if c.Address == remote {
+			peer = c
+			break
+		}
+	}
+	var env envelope
+	if peer.ID == "" || len(data) > 20000 || json.Unmarshal([]byte(data), &env) != nil {
+		n.mu.Unlock()
+		return false
+	}
+	p, err := openEnvelope(env, peer, n.state.Secret, keyID(n.state.Public))
+	n.mu.Unlock()
+	if err != nil || p.Kind != "ack" {
+		return false
+	}
+	return n.applyAck(env, peer.ID, p.Ack) == nil
 }
 func (n *Node) Stop() { n.life.Lock(); defer n.life.Unlock(); n.stopLocked() }
 func (n *Node) stopLocked() {

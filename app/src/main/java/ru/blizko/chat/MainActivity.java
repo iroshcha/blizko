@@ -182,7 +182,7 @@ public final class MainActivity extends Activity {
             bubble.addView(text(m.getString("text"),16,INK));
             String meta=new SimpleDateFormat("HH:mm",Locale.getDefault()).format(new Date(m.getLong("time")));
             JSONObject attempts=s.optJSONObject("sending");
-            if(out)meta+=" · "+(m.getBoolean("delivered")?"Доставлено":m.optBoolean("cancelled")?"Отменено":!m.optString("failure").isEmpty()?"Не отправлено":attempts!=null&&m.optString("id").equals(attempts.optString(peer))?"Отправляем…":!s.optBoolean("enabled")?"Ожидает включения приёма":"В очереди · не доставлено");bubble.addView(text(meta,11,MUTED));
+            if(out)meta+=" · "+(m.getBoolean("delivered")?"Доставлено":m.optBoolean("cancelled")?"Отменено":m.optLong("storedUntil")>System.currentTimeMillis()?"На сервере":!m.optString("failure").isEmpty()?"Не отправлено":attempts!=null&&m.optString("id").equals(attempts.optString(peer))?"Отправляем…":!s.optBoolean("enabled")?"Ожидает включения приёма":"В очереди · не доставлено");bubble.addView(text(meta,11,MUTED));
             if(!m.optString("failure").isEmpty())bubble.addView(text(m.optString("failure"),12,MUTED));
             LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.gravity=out?Gravity.END:Gravity.START;p.setMargins(out?dp(26):0,dp(4),out?0:dp(26),dp(4));bubbles.addView(bubble,p);
         }
@@ -208,7 +208,7 @@ public final class MainActivity extends Activity {
         for(int i=0;i<rows.getChildCount();i++){View row=rows.getChildAt(i);if(row.getTag() instanceof Long&&row.getTop()<bottom&&row.getBottom()>top)through=Math.max(through,(Long)row.getTag());}markRead(through);
     }
     private void messageActions(JSONObject message){
-        List<String> choices=new ArrayList<>();choices.add("Копировать текст");boolean pending=message.optBoolean("out")&&!message.optBoolean("delivered");if(pending){choices.add("Повторить отправку");if(!message.optBoolean("cancelled"))choices.add("Отменить отправку");}
+        List<String> choices=new ArrayList<>();choices.add("Копировать текст");boolean pending=message.optBoolean("out")&&!message.optBoolean("delivered");if(pending){choices.add("Повторить отправку");if(!message.optBoolean("cancelled")&&!message.optBoolean("submitted"))choices.add("Отменить отправку");}
         new AlertDialog.Builder(this).setTitle("Сообщение").setItems(choices.toArray(new String[0]),(d,which)->{
             if(which==0)getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Сообщение",message.optString("text")));
             else if(which==1)work(()->app.node.retryMessage(message.optString("peer"),message.optString("id")));

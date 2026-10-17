@@ -3,6 +3,7 @@ package main
 
 import (
 	"blizko/core/diagnostics"
+	"blizko/core/mailbox"
 	"blizko/core/transport"
 	"blizko/core/webapp"
 	"context"
@@ -23,6 +24,7 @@ func main() {
 	token := flag.String("token", "", "Optional diagnostic token file; empty disables collection")
 	initToken := flag.Bool("init", false, "Create token file without overwriting")
 	webOrigin := flag.String("web-origin", "", "Exact HTTPS origin allowed for the web client; empty disables browser sockets")
+	mailDir := flag.String("mailbox", "", "Private persistent encrypted queue and Web Push state directory")
 	flag.Parse()
 	if err := webapp.ValidateOrigin(*webOrigin); err != nil {
 		log.Fatal(err)
@@ -58,6 +60,15 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	broker := transport.NewServerWithBrowserOrigin(*webOrigin)
+	if *mailDir != "" {
+		store, err := mailbox.Open(*mailDir, *webOrigin)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer store.Close()
+		broker.Durable = store
+		go store.Run(ctx)
+	}
 	defer broker.Close()
 	mux := http.NewServeMux()
 	mux.Handle(transport.Path, broker)

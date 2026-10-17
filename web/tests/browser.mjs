@@ -9,11 +9,12 @@ import QRCode from 'qrcode';
 
 const root=resolve(import.meta.dirname,'../..'), output=process.env.BLIZKO_WEB_TEST_OUTPUT||join(root,'.tools/web-checks');await mkdir(output,{recursive:true});
 const base=process.env.BLIZKO_WEB_TEST_URL||'http://127.0.0.1:39443';
-let server=process.env.BLIZKO_WEB_TEST_URL?null:spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39443','-web-origin',base],{windowsHide:true});
+const mailboxDir=await mkdtemp(join(output,'mailbox-'));
+let server=process.env.BLIZKO_WEB_TEST_URL?null:spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39443','-web-origin',base,'-mailbox',mailboxDir],{windowsHide:true});
 let serverLog='';server?.stderr.on('data',b=>serverLog+=b);
 async function until(fn,label,timeout=30000){const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await pause(150);}throw Error('Timeout: '+label);}
 await until(async()=>{try{return (await fetch(base+'/healthz')).status===204;}catch{return false;}},'server');
-async function visit(p){await p.goto(base+'/web/');const gate=p.getByRole('button',{name:'Посетить',exact:true});if(await gate.isVisible())await gate.click();}
+async function visit(p){await p.goto(base+'/web/');const gate=p.getByRole('button',{name:'Посетить',exact:true});await p.locator('#restore-open:visible,#app:visible,#fatal:visible').or(gate).first().waitFor({state:'visible',timeout:60000});if(await gate.isVisible())await gate.click();await p.locator('#restore-open').waitFor({state:'attached',timeout:60000});}
 const summary=[];
 try {
  for(const name of (process.env.BLIZKO_TEST_BROWSERS||'chromium,webkit').split(',')) {
@@ -146,6 +147,18 @@ try {
    await command({op:'start'});await until(async()=> (await command({op:'snapshot'})).messages.filter(m=>m.text==='Сохранено без собеседника').length===1,'offline queue delivered once');
    await until(()=>page.evaluate(()=>window.pendingNode.dataset.status==='delivered'),'pending message receipt');
    assert.equal(await page.evaluate(()=>window.pendingNode.isConnected&&window.pendingText===window.pendingNode.querySelector('.bubble-text').firstChild),true,'receipt preserves message node and text');
+   // Durable delivery works after the sending browser closes its socket.
+   await command({op:'stop'});
+   for(let i=0;i<3;i++){await page.locator('#message').fill('Доставка после закрытия '+i);await page.locator('#send').click();}
+   await until(()=>page.locator('.bubble.out[data-status="stored"]').count().then(n=>n===3),'three messages stored by server');
+   await page.goto('about:blank');await command({op:'start'});
+   await until(async()=>(await command({op:'snapshot'})).messages.filter(m=>m.text.startsWith('Доставка после закрытия ')).length===3,'delivery with sender closed');
+   await command({op:'send',peer:identity.id,text:'Веб был закрыт при отправке'});
+   await until(async()=>(await command({op:'snapshot'})).messages.some(m=>m.text==='Веб был закрыт при отправке'&&m.storedUntil>0),'native message stored');
+   await command({op:'stop'});await visit(page);await page.getByRole('button',{name:'Открыть чат: Компьютер'}).click();
+   await page.locator('#messages').getByText('Веб был закрыт при отправке',{exact:true}).waitFor();
+   await until(()=>page.locator('.bubble.out[data-status="delivered"]').filter({hasText:'Доставка после закрытия '}).count().then(n=>n===3),'receipts survive sender absence');
+   await command({op:'start'});await page.locator('#message').fill('Черновик после перезапуска');await pause(500);
    await page.locator('#back').click();await page.locator('#qr-open').click();assert.equal(await page.locator('#own-code').inputValue(),code,'stable identity');await page.locator('#qr-dialog [data-close]').click();
    // A second tab cannot race the vault and replace the active socket.
    const second=await context.newPage();await second.goto(base+'/web/');await second.locator('#fatal').waitFor({state:'visible'});assert.match(await second.locator('#fatal-text').textContent(),/другой вкладке/);await second.close();
@@ -163,14 +176,14 @@ try {
    assert.equal(workerState.controlled,true,'service worker controls the page');
    if(name==='webkit' && server) {server.kill();await pause(1000);} else await restored.setOffline(true);
    await restoredPage.reload();await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();await restoredPage.locator('#messages').getByText(hello,{exact:true}).waitFor();
-   if(name==='webkit' && server) {server=spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39443','-web-origin',base],{windowsHide:true});server.stderr.on('data',b=>serverLog+=b);} else await restored.setOffline(false);
+   if(name==='webkit' && server) {server=spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39443','-web-origin',base,'-mailbox',mailboxDir],{windowsHide:true});server.stderr.on('data',b=>serverLog+=b);} else await restored.setOffline(false);
    await restoredPage.locator('#back').click();await restoredPage.screenshot({animations:'disabled',path:join(output,name+'-contacts.png')});
    await restoredPage.locator('#settings-open').click();await restoredPage.locator('#clear-open').click();await restoredPage.locator('#clear-confirm').click();await restoredPage.locator('#clear-dialog').waitFor({state:'hidden'});await restoredPage.locator('#settings-dialog [data-close]').click();
    await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();assert.equal(await restoredPage.locator('#messages .bubble').count(),0,'cleared history is hidden');
    assert.equal(await restoredPage.locator('#message').inputValue(),'Черновик после перезапуска','clearing preserves drafts');
    await restoredPage.reload();await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();assert.equal(await restoredPage.locator('#messages .bubble').count(),0,'cleared history remains cleared after reopening');
    await restored.close();
-   assert.deepEqual(errors,[],'browser errors');summary.push(name+': PASS — Go interop, receipts, three-step QR wizard, clipboard success/denial, native dialog focus/rapid toggles, reduced motion, 320/390/768/1280px layouts, multiline composer, byte limit, keyboard send, stable DOM/selection/scroll, new-message jump, storage failure, outbox, drafts, tab lock/CAS, backup/restore, offline shell, history clearing');console.log(summary.at(-1));
+   assert.deepEqual(errors,[],'browser errors');summary.push(name+': PASS — Go interop, receipts, three-step QR wizard, clipboard success/denial, native dialog focus/rapid toggles, reduced motion, 320/390/768/1280px layouts, multiline composer, byte limit, keyboard send, stable DOM/selection/scroll, new-message jump, storage failure, outbox, drafts, tab lock/CAS, backup/restore, offline shell, history clearing, durable server mailbox and offline receipts');console.log(summary.at(-1));
   }catch(e){await page.screenshot({animations:'disabled',path:join(output,name+'-failure.png')}).catch(()=>{});throw e;}
   finally{peer.stdin.end();peer.kill();await browser.close();}
  }
