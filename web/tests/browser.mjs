@@ -14,7 +14,9 @@ let server=process.env.BLIZKO_WEB_TEST_URL?null:spawn(join(root,'.tools/Blizko.W
 let serverLog='';server?.stderr.on('data',b=>serverLog+=b);
 async function until(fn,label,timeout=30000){const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await pause(150);}throw Error('Timeout: '+label);}
 await until(async()=>{try{return (await fetch(base+'/healthz')).status===204;}catch{return false;}},'server');
-async function visit(p){await p.goto(base+'/web/');const gate=p.getByRole('button',{name:'Посетить',exact:true});await p.locator('#restore-open:visible,#app:visible,#fatal:visible').or(gate).first().waitFor({state:'visible',timeout:60000});if(await gate.isVisible())await gate.click();await p.locator('#restore-open').waitFor({state:'attached',timeout:60000});}
+async function visit(p){await p.goto(base+'/web/');const gate=p.getByRole('button',{name:'Посетить',exact:true});await p.locator('#restore-open:visible,#app:visible,#fatal:visible').or(gate).first().waitFor({state:'visible',timeout:60000});if(await gate.isVisible())await gate.click();await p.locator('#create-form button:enabled,#app:not([hidden]),#fatal:not([hidden])').first().waitFor({state:'visible',timeout:60000});}
+// Visual checks run locally; Tuna's interstitial fonts can stall public screenshots.
+async function capture(page,options){if(!process.env.BLIZKO_WEB_TEST_URL)await page.screenshot(options);}
 const summary=[];
 try {
  for(const name of (process.env.BLIZKO_TEST_BROWSERS||'chromium,webkit').split(',')) {
@@ -25,10 +27,10 @@ try {
   let peerLog='';peer.stderr.on('data',b=>peerLog+=b);const answers=[];createInterface({input:peer.stdout}).on('line',l=>{answers.shift()?.(JSON.parse(l));});
   const command=req=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Native peer timeout '+peerLog)),15000);answers.push(v=>{clearTimeout(timer);v.error?reject(Error(v.error)):resolve(v.value);});peer.stdin.write(JSON.stringify(req)+'\n');});
   try {
-   await visit(page);
-   await page.screenshot({animations:'disabled',path:join(output,name+'-welcome.png')});
+   await visit(page);console.log(name+': public/local application loaded');
+   await capture(page,{animations:'disabled',path:join(output,name+'-welcome.png')});
    await page.setViewportSize({width:1280,height:900});
-   await page.screenshot({animations:'disabled',path:join(output,name+'-welcome-desktop.png')});
+   await capture(page,{animations:'disabled',path:join(output,name+'-welcome-desktop.png')});
    await page.setViewportSize({width:390,height:844});await page.locator('#my-name').fill('Айфон · тест');
    // Failing the state write after key insertion must abort both records.
    await page.evaluate(()=>{window.originalPut=IDBObjectStore.prototype.put;IDBObjectStore.prototype.put=function(...args){if(args[1]==='state')throw new DOMException('Quota full','QuotaExceededError');return window.originalPut.apply(this,args);};});
@@ -39,7 +41,7 @@ try {
    await page.locator('#create-form button').click();
    await page.locator('#app').waitFor({state:'visible'});await until(()=>page.locator('#status').textContent().then(t=>t.includes('Подключено')),'browser authenticated');
    assert.equal(await page.locator('#toast').isVisible(),false,'successful creation clears previous failure');
-   await page.screenshot({animations:'disabled',path:join(output,name+'-empty.png')});
+   await capture(page,{animations:'disabled',path:join(output,name+'-empty.png')});
    // Native dialog focus must restore on close, including interrupted transitions.
    await page.locator('#settings-open').focus();await page.locator('#settings-open').press('Enter');
    await page.locator('#settings-dialog').waitFor({state:'visible'});await page.keyboard.press('Escape');
@@ -57,7 +59,7 @@ try {
    await command({op:'add',name:'Web',code});const nativeCode=await command({op:'code'});
    const qr=join(temp,'native-qr.png');await QRCode.toFile(qr,nativeCode,{width:900,margin:4});
    await page.locator('#add-open').click();
-   await page.screenshot({animations:'disabled',path:join(output,name+'-add-start.png')});
+   await capture(page,{animations:'disabled',path:join(output,name+'-add-start.png')});
    await page.locator('#contact-code').fill('not-a-contact');await page.locator('#add-submit').click();await page.locator('#add-error').waitFor({state:'visible'});
    assert.equal(await page.locator('#add-step-1').isVisible(),true,'invalid QR stays at step one');
    await page.locator('#photo-file').setInputFiles(qr);
@@ -66,7 +68,7 @@ try {
    assert.equal(await page.locator('#contact-name').inputValue(),'Компьютер','back preserves entered name');
    await page.locator('#add-submit').click();await page.locator('#add-step-3').waitFor({state:'visible'});
    assert.equal(await page.locator('#add-own-code').inputValue(),code,'wizard shows the original identity');
-   await page.screenshot({animations:'disabled',path:join(output,name+'-add-contact.png')});
+   await capture(page,{animations:'disabled',path:join(output,name+'-add-contact.png')});
    await page.evaluate(()=>{navigator.clipboard.writeText=async()=>{throw new DOMException('Denied','NotAllowedError');};});
    await page.locator('#add-copy').click();
    assert.equal(await page.locator('#add-own-code').isVisible(),true,'clipboard denial reveals the manual fallback');
@@ -89,17 +91,17 @@ try {
    await page.locator('#messages').getByText('Ответ из общего ядра Android/Windows 🔐',{exact:true}).waitFor();
    await until(async()=> (await command({op:'snapshot'})).messages.some(m=>m.out&&m.delivered),'native receipt');
    assert.equal(await page.evaluate(()=>window.firstBubble===document.querySelector('.bubble')&&window.firstText===document.querySelector('.bubble-text').firstChild),true,'new incoming message preserves existing DOM nodes');
-   await page.screenshot({animations:'disabled',path:join(output,name+'-chat.png')});
+   await capture(page,{animations:'disabled',path:join(output,name+'-chat.png')});
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'mobile horizontal overflow');
    await page.setViewportSize({width:1280,height:900});
-   await page.screenshot({animations:'disabled',path:join(output,name+'-desktop.png')});
+   await capture(page,{animations:'disabled',path:join(output,name+'-desktop.png')});
    assert.equal(await page.locator('#sidebar').isVisible(),true,'desktop keeps contacts alongside chat');
    for(const width of [320,768]){
     await page.setViewportSize({width,height:844});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`${width}px page overflow`);
     // WebKit dispatches visualViewport.resize after setViewportSize resolves.
     await until(()=>page.locator('#send').evaluate(e=>{const r=e.getBoundingClientRect();return r.right<=innerWidth&&r.bottom<=innerHeight;}),`${width}px composer settles inside viewport`,3000);
-    await page.screenshot({animations:'disabled',path:join(output,`${name}-chat-${width}.png`)});
+    await capture(page,{animations:'disabled',path:join(output,`${name}-chat-${width}.png`)});
    }
    await page.setViewportSize({width:1280,height:900});
    await page.locator('#message').fill('Отправлено сочетанием клавиш');await page.locator('#message').press('Control+Enter');
@@ -158,6 +160,7 @@ try {
    await command({op:'stop'});await visit(page);await page.getByRole('button',{name:'Открыть чат: Компьютер'}).click();
    await page.locator('#messages').getByText('Веб был закрыт при отправке',{exact:true}).waitFor();
    await until(()=>page.locator('.bubble.out[data-status="delivered"]').filter({hasText:'Доставка после закрытия '}).count().then(n=>n===3),'receipts survive sender absence');
+   console.log(name+': durable mailbox and offline receipts passed');
    await command({op:'start'});await page.locator('#message').fill('Черновик после перезапуска');await pause(500);
    await page.locator('#back').click();await page.locator('#qr-open').click();assert.equal(await page.locator('#own-code').inputValue(),code,'stable identity');await page.locator('#qr-dialog [data-close]').click();
    // A second tab cannot race the vault and replace the active socket.
@@ -177,14 +180,14 @@ try {
    if(name==='webkit' && server) {server.kill();await pause(1000);} else await restored.setOffline(true);
    await restoredPage.reload();await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();await restoredPage.locator('#messages').getByText(hello,{exact:true}).waitFor();
    if(name==='webkit' && server) {server=spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39443','-web-origin',base,'-mailbox',mailboxDir],{windowsHide:true});server.stderr.on('data',b=>serverLog+=b);} else await restored.setOffline(false);
-   await restoredPage.locator('#back').click();await restoredPage.screenshot({animations:'disabled',path:join(output,name+'-contacts.png')});
+   await restoredPage.locator('#back').click();await capture(restoredPage,{animations:'disabled',path:join(output,name+'-contacts.png')});
    await restoredPage.locator('#settings-open').click();await restoredPage.locator('#clear-open').click();await restoredPage.locator('#clear-confirm').click();await restoredPage.locator('#clear-dialog').waitFor({state:'hidden'});await restoredPage.locator('#settings-dialog [data-close]').click();
    await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();assert.equal(await restoredPage.locator('#messages .bubble').count(),0,'cleared history is hidden');
    assert.equal(await restoredPage.locator('#message').inputValue(),'Черновик после перезапуска','clearing preserves drafts');
    await restoredPage.reload();await restoredPage.getByRole('button',{name:'Открыть чат: Компьютер'}).click();assert.equal(await restoredPage.locator('#messages .bubble').count(),0,'cleared history remains cleared after reopening');
    await restored.close();
    assert.deepEqual(errors,[],'browser errors');summary.push(name+': PASS — Go interop, receipts, three-step QR wizard, clipboard success/denial, native dialog focus/rapid toggles, reduced motion, 320/390/768/1280px layouts, multiline composer, byte limit, keyboard send, stable DOM/selection/scroll, new-message jump, storage failure, outbox, drafts, tab lock/CAS, backup/restore, offline shell, history clearing, durable server mailbox and offline receipts');console.log(summary.at(-1));
-  }catch(e){await page.screenshot({animations:'disabled',path:join(output,name+'-failure.png')}).catch(()=>{});throw e;}
+  }catch(e){await capture(page,{animations:'disabled',path:join(output,name+'-failure.png')}).catch(()=>{});throw e;}
   finally{peer.stdin.end();peer.kill();await browser.close();}
  }
  await writeFile(join(output,'result.txt'),summary.join('\n')+'\n');
