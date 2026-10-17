@@ -1,7 +1,7 @@
-param([switch]$SkipTests, [string]$ZxingDll = '')
+param([switch]$SkipTests, [string]$ZxingDll = '', [string]$ToolRoot = '')
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
-$toolRoot = Join-Path $taskRoot '.tools'
+if (-not $ToolRoot) { $ToolRoot = Join-Path $taskRoot '.tools' }
 if (Test-Path "$toolRoot\go\bin\go.exe") { $env:PATH = "$toolRoot\go\bin;$env:PATH" }
 $env:GOPATH = "$toolRoot\gopath"
 $env:GOCACHE = "$toolRoot\gocache"

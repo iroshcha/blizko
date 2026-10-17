@@ -1,6 +1,7 @@
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import {setupPush} from './push.js';
+import {RelayDirectory,FALLBACK_URL} from './discovery.js';
 import {Chat} from './client.js';
 import {contactCode,parseContact} from './protocol.js';
 import {exportBackup,importBackup} from './storage.js';
@@ -8,7 +9,9 @@ import {createUIStore,connectionView,composerView} from './ui-state.js';
 import {ConversationView,element,setText,reconcile} from './conversation-view.js';
 
 const $=id=>document.getElementById(id);
-const chat=new Chat(),ui=createUIStore(),contactNodes=new Map();
+const pages=typeof __BLIZKO_PAGES__!=='undefined'&&__BLIZKO_PAGES__;
+const chat=new Chat(pages?FALLBACK_URL:location.origin),ui=createUIStore(),contactNodes=new Map();
+const directory=pages?new RelayDirectory({onURL:url=>chat.setRelay(url)}):null;
 let toastTimer,backupMode='export',registration,releaseLock,markingRead=false;
 setupPush(chat,s=>toast(s));
 function toast(s){setText($('toast'),s);$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500);}
@@ -226,14 +229,15 @@ async function boot() {
   resolve();await new Promise(r=>releaseLock=r);
  }).catch(reject));
  await chat.init();if(chat.state){render();chat.start();}
+ directory?.start();
  $('create-form').querySelector('[type=submit]').disabled=false;$('restore-open').disabled=false;$('boot-status').hidden=true;
  setupWorker().catch(()=>{});
 }
-window.addEventListener('online',()=>chat.reconnect());
+window.addEventListener('online',()=>{directory?.refresh();chat.reconnect();});
 window.addEventListener('offline',()=>chat.disconnect());
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&chat.state){chat.reconnect();markVisibleRead();}});
 function resizeViewport(){if(window.visualViewport?.scale===1)document.documentElement.style.setProperty('--app-height',window.visualViewport.height+'px');}
 window.visualViewport?.addEventListener('resize',resizeViewport);resizeViewport();
-window.addEventListener('pagehide',()=>{chat.stop();chat.chain.finally(()=>releaseLock?.());});
+window.addEventListener('pagehide',()=>{directory?.stop();chat.stop();chat.chain.finally(()=>releaseLock?.());});
 window.addEventListener('pageshow',e=>{if(e.persisted)location.reload();});
 boot().catch(fatal);

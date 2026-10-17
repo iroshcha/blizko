@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,7 +37,7 @@ func NewServer() *Server {
 	return &Server{clients: make(map[string]*peer), slots: make(chan struct{}, 128)}
 }
 
-// NewServerWithBrowserOrigin allows one exact, trusted web application origin.
+// NewServerWithBrowserOrigin allows a comma-separated list of exact trusted origins.
 // Native clients still authenticate identically without an Origin header.
 func NewServerWithBrowserOrigin(origin string) *Server {
 	s := NewServer()
@@ -58,7 +59,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Never infer trust from Host or forwarded headers supplied by a tunnel.
-	if origin := r.Header.Get("Origin"); origin != "" && (s.browserOrigin == "" || origin != s.browserOrigin) {
+	if origin := r.Header.Get("Origin"); origin != "" && !s.allowedOrigin(origin) {
 		http.Error(w, "browser origin not allowed", 403)
 		return
 	}
@@ -238,4 +239,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (s *Server) allowedOrigin(origin string) bool {
+	for _, allowed := range strings.Split(s.browserOrigin, ",") {
+		if allowed != "" && origin == allowed {
+			return true
+		}
+	}
+	return false
 }

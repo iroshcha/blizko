@@ -1,6 +1,7 @@
 package mobile
 
 import (
+	"blizko/core/discovery"
 	"blizko/core/transport"
 	"bytes"
 	"context"
@@ -10,11 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-const homeRelayURL = "https://ample-raven-6363.ru.tuna.am/"
+const homeRelayURL = discovery.FallbackURL
 
 type wireResponse = transport.Response
 type serverLink struct{ client *transport.Client }
@@ -43,12 +45,15 @@ func (n *Node) startLocked() error {
 		return nil
 	}
 	base := n.state.RelayURL
+	managed := discovery.Managed(base)
 	if base == "" {
 		base = homeRelayURL
 	}
 	if override := os.Getenv("BLIZKO_SERVER_URL"); override != "" {
+		managed = false
 		base = override
 	} else if legacy := os.Getenv("BLIZKO_RELAY_URL"); legacy != "" {
+		managed = discovery.Managed(legacy)
 		base = legacy
 	}
 	if _, e := transport.ServerURL(base); e != nil {
@@ -83,10 +88,13 @@ func (n *Node) startLocked() error {
 		} else {
 			n.status = "Связь с домашним сервером не установлена"
 		}
-		n.relay = base
+		n.relay = link.client.BaseURL()
 		n.revision++
 	})
 	link.client.Receipt = n.serverReceipt
+	if managed {
+		link.client.Resolve = discovery.New(filepath.Join(n.dir, "relay-directory.json")).Resolve
+	}
 	n.link = link
 	n.mu.Unlock()
 	go link.client.Run(ctx)

@@ -9,12 +9,13 @@ import QRCode from 'qrcode';
 
 const root=resolve(import.meta.dirname,'../..'), output=process.env.BLIZKO_WEB_TEST_OUTPUT||join(root,'.tools/web-checks');await mkdir(output,{recursive:true});
 const base=process.env.BLIZKO_WEB_TEST_URL||'http://127.0.0.1:39443';
+const pageURL=process.env.BLIZKO_WEB_TEST_PAGE_URL||base+'/web/';
 const mailboxDir=await mkdtemp(join(output,'mailbox-'));
 let server=process.env.BLIZKO_WEB_TEST_URL?null:spawn(join(root,'.tools/Blizko.WebTestServer.exe'),['-listen','127.0.0.1:39443','-web-origin',base,'-mailbox',mailboxDir],{windowsHide:true});
 let serverLog='';server?.stderr.on('data',b=>serverLog+=b);
 async function until(fn,label,timeout=30000){const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await pause(150);}throw Error('Timeout: '+label);}
 await until(async()=>{try{return (await fetch(base+'/healthz')).status===204;}catch{return false;}},'server');
-async function visit(p){await p.goto(base+'/web/');const gate=p.getByRole('button',{name:'Посетить',exact:true});await p.locator('#restore-open:visible,#app:visible,#fatal:visible').or(gate).first().waitFor({state:'visible',timeout:60000});if(await gate.isVisible())await gate.click();await p.locator('#create-form button:enabled,#app:not([hidden]),#fatal:not([hidden])').first().waitFor({state:'visible',timeout:60000});}
+async function visit(p){await p.goto(pageURL);const gate=p.getByRole('button',{name:'Посетить',exact:true});await p.locator('#restore-open:visible,#app:visible,#fatal:visible').or(gate).first().waitFor({state:'visible',timeout:60000});if(await gate.isVisible())await gate.click();await p.locator('#create-form button:enabled:visible,#app:visible,#fatal:visible').first().waitFor({state:'visible',timeout:60000});}
 // Visual checks run locally; Tuna's interstitial fonts can stall public screenshots.
 async function capture(page,options){if(!process.env.BLIZKO_WEB_TEST_URL)await page.screenshot(options);}
 const summary=[];
@@ -164,7 +165,7 @@ try {
    await command({op:'start'});await page.locator('#message').fill('Черновик после перезапуска');await pause(500);
    await page.locator('#back').click();await page.locator('#qr-open').click();assert.equal(await page.locator('#own-code').inputValue(),code,'stable identity');await page.locator('#qr-dialog [data-close]').click();
    // A second tab cannot race the vault and replace the active socket.
-   const second=await context.newPage();await second.goto(base+'/web/');await second.locator('#fatal').waitFor({state:'visible'});assert.match(await second.locator('#fatal-text').textContent(),/другой вкладке/);await second.close();
+   const second=await context.newPage();await second.goto(pageURL);await second.locator('#fatal').waitFor({state:'visible'});assert.match(await second.locator('#fatal-text').textContent(),/другой вкладке/);await second.close();
    const raw=await page.evaluate(()=>new Promise((resolve,reject)=>{const r=indexedDB.open('blizko-web-v1');r.onsuccess=()=>{const db=r.result,tx=db.transaction('vault'),s=tx.objectStore('vault'),a=s.get('state'),b=s.get('key');tx.oncomplete=()=>resolve({encrypted:a.result.body instanceof ArrayBuffer,extractable:b.result.extractable,raw:JSON.stringify(a.result)});tx.onerror=()=>reject(tx.error);};}));
    assert.equal(raw.encrypted,true);assert.equal(raw.extractable,false);assert.ok(!raw.raw.includes(hello));
    // Download and restore the actual encrypted backup through the interface.

@@ -27,7 +27,8 @@ type Client struct {
 	identity string
 	Handle   func(string, string) Response
 	State    func(bool)
-	Receipt  func(string, string) bool // True only after an encrypted peer receipt is persisted.
+	Resolve  func(context.Context) (string, error) // Optional signed relay directory.
+	Receipt  func(string, string) bool             // True only after an encrypted peer receipt is persisted.
 	mu       sync.Mutex
 	current  *session
 	wake     chan struct{}
@@ -50,13 +51,34 @@ func (c *Client) Reconnect() {
 	}
 }
 func (c *Client) Run(ctx context.Context) {
+	if c.Resolve != nil {
+		c.refreshAddress(ctx)
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					c.refreshAddress(ctx)
+				}
+			}
+		}()
+	}
 	delay := 250 * time.Millisecond
 	for ctx.Err() == nil {
-		socket, e := dial(ctx, c.base, c.key)
+		base := c.BaseURL()
+		socket, e := dial(ctx, base, c.key)
 		if e == nil {
 			delay = 250 * time.Millisecond
 			s := &session{conn: socket, done: make(chan struct{}), pending: make(map[string]pending)}
 			c.mu.Lock()
+			if c.base != base {
+				c.mu.Unlock()
+				socket.CloseNow()
+				continue
+			}
 			c.current = s
 			c.mu.Unlock()
 			if c.State != nil {
@@ -90,6 +112,23 @@ func (c *Client) Run(ctx context.Context) {
 				}
 			}
 		}
+	}
+}
+func (c *Client) BaseURL() string { c.mu.Lock(); defer c.mu.Unlock(); return c.base }
+func (c *Client) refreshAddress(ctx context.Context) {
+	base, err := c.Resolve(ctx)
+	if err != nil {
+		return
+	}
+	if _, err = ServerURL(base); err != nil {
+		return
+	}
+	c.mu.Lock()
+	changed := base != c.base
+	c.base = base
+	c.mu.Unlock()
+	if changed {
+		c.Reconnect()
 	}
 }
 func (c *Client) serve(ctx context.Context, s *session) {

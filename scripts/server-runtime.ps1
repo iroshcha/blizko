@@ -112,11 +112,20 @@ try {
             Set-Acl -LiteralPath $mailboxPath -AclObject $acl
             $serverArguments = @('-listen', '127.0.0.1:3340')
             $serverArguments += @('-mailbox', ('"' + $mailboxPath + '"'))
-            if ($hostname) { $serverArguments += @('-web-origin', ('https://' + $hostname)) }
+            if ($hostname) {
+                $allowedOrigins = 'https://' + $hostname
+                $savedSettings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+                if ($savedSettings.pagesOrigin) {
+                    if ($savedSettings.pagesOrigin -ne 'https://iroshcha.github.io') { throw 'Unexpected Pages origin.' }
+                    $allowedOrigins += ',' + $savedSettings.pagesOrigin
+                }
+                $serverArguments += @('-web-origin', $allowedOrigins)
+            }
             $tokenFile = Join-Path $serverRoot 'diagnostics-private\access-code.txt'
             if (Test-Path -LiteralPath $tokenFile -PathType Leaf) { $serverArguments += @('-token', ('"' + $tokenFile + '"'), '-data', ('"' + (Join-Path $serverRoot 'diagnostics-private\journal') + '"')) }
             $relayProcess = $null
             $tunaProcess = $null
+            $publisherProcess = $null
             try {
                 $relayProcess = Start-Process -FilePath $relayExe -ArgumentList $serverArguments -WorkingDirectory $serverRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'server.out.log') -RedirectStandardError (Join-Path $logs 'server.err.log')
                 $job.Add($relayProcess)
@@ -142,12 +151,22 @@ try {
                 Write-Host 'Оставьте это окно открытым. Чтобы остановить сервер, нажмите Ctrl+C или закройте окно.'
                 Write-Host 'Для проверки пришлите в чат только адрес выше. Пароль и токен не нужны.'
                 Write-Host 'Журнал Tuna: logs\tuna.out.log и logs\tuna.err.log.'
-                while (-not $relayProcess.HasExited -and -not $tunaProcess.HasExited) { Start-Sleep -Seconds 1 }
+                $nextPublish = [DateTime]::UtcNow
+                while (-not $relayProcess.HasExited -and -not $tunaProcess.HasExited) {
+                    $publisherExe = Join-Path $serverRoot 'Blizko.RelayPublisher.exe'
+                    $publisherRoot = Join-Path $serverRoot 'publisher-private'
+                    if ($savedSettings.pagesOrigin -and (Test-Path -LiteralPath $publisherExe) -and (Test-Path -LiteralPath (Join-Path $publisherRoot 'github.key')) -and [DateTime]::UtcNow -ge $nextPublish -and ($null -eq $publisherProcess -or $publisherProcess.HasExited)) {
+                        $publisherProcess = Start-Process -FilePath $publisherExe -ArgumentList @('-root', ('"'+$publisherRoot+'"'), '-log', ('"'+(Join-Path $logs 'tuna.err.log')+'"')) -WorkingDirectory $serverRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'publisher.out.log') -RedirectStandardError (Join-Path $logs 'publisher.err.log')
+                        $job.Add($publisherProcess)
+                        $nextPublish = [DateTime]::UtcNow.AddMinutes(1)
+                    }
+                    Start-Sleep -Seconds 1
+                }
                 if ($tunaProcess.HasExited) { throw 'Tuna остановилась. Откройте logs\tuna.out.log и logs\tuna.err.log: там указана причина.' }
                 throw 'Сервер Близко остановился. Подробности в logs\server.err.log.'
             } finally {
                 $job.Dispose()
-                foreach ($child in @($tunaProcess, $relayProcess)) {
+                foreach ($child in @($publisherProcess, $tunaProcess, $relayProcess)) {
                     if ($null -ne $child -and -not $child.HasExited) { Stop-Process -Id $child.Id -ErrorAction SilentlyContinue }
                 }
             }

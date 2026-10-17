@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 )
 
@@ -61,7 +62,7 @@ func main() {
 	defer stop()
 	broker := transport.NewServerWithBrowserOrigin(*webOrigin)
 	if *mailDir != "" {
-		store, err := mailbox.Open(*mailDir, *webOrigin)
+		store, err := mailbox.Open(*mailDir, strings.Split(*webOrigin, ",")[0])
 		if err != nil {
 			log.Fatal(err)
 		}

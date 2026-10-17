@@ -16,6 +16,7 @@ export class Chat extends EventTarget {
   this.connection='offline';this.activeMessages=new Map();
  }
  change(){this.dispatchEvent(new Event('change'));}
+ setRelay(base){if(this.base===base)return;this.base=base;this.serverConfig=null;this.reconnect();}
  async init(){this.state=await this.vault.init();return this.state;}
  async create(name) {
   name=name.trim();if(!name||[...name].length>60)throw Error('Введите имя до 60 символов');

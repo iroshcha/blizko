@@ -12,7 +12,7 @@ Set-Content -LiteralPath "$taskRoot\local.properties" -Value "sdk.dir=$($env:AND
 Push-Location $taskRoot
 try {
     $variant = if ($DebugBuild) { 'Debug' } else { 'Release' }
-    & "$taskRoot\.tools\gradle-8.11.1\bin\gradle.bat" --no-daemon ":app:assemble$variant" ":app:lint$variant"
+    & "$toolsRoot\gradle-8.11.1\bin\gradle.bat" --no-daemon ":app:assemble$variant" ":app:lint$variant"
     if ($LASTEXITCODE -ne 0) { throw 'Android build failed' }
     New-Item -ItemType Directory -Force "$taskRoot\dist" | Out-Null
     if ($DebugBuild) {

@@ -16,6 +16,17 @@ import (
 var assets embed.FS
 
 func ValidateOrigin(raw string) error {
+	if strings.Contains(raw, ",") {
+		for _, origin := range strings.Split(raw, ",") {
+			if origin == "" {
+				return errors.New("empty web origin")
+			}
+			if err := ValidateOrigin(origin); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if raw == "" {
 		return nil
 	}
@@ -35,10 +46,7 @@ func ValidateOrigin(raw string) error {
 
 func Handler(origin string) http.Handler {
 	files, _ := fs.Sub(assets, "assets")
-	socket := strings.Replace(origin, "https://", "wss://", 1)
-	if strings.HasPrefix(origin, "http://") {
-		socket = strings.Replace(origin, "http://", "ws://", 1)
-	}
+	socket := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(origin, ",", " "), "https://", "wss://"), "http://", "ws://")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' "+socket+"; worker-src 'self'; manifest-src 'self'; media-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
